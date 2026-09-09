@@ -1,28 +1,48 @@
-# CMake Minimum Sürümü
 cmake_minimum_required(VERSION 3.18.1)
 
-# Proje Adı
-project("multiplayermod")
+project(multiplayermod LANGUAGES CXX)
 
-# C++ Standardı (C++17)
+# Android-only shared library.
+if (NOT ANDROID)
+    message(FATAL_ERROR "multiplayermod is an Android NDK project. Configure it with android.toolchain.cmake.")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Android Log kütüphanesini (LOGI, __android_log_print vb. için) sisteme tanımla
-find_library(
-    log-lib
-    log
-)
+# Default to the ABI implied by the source's Thumb-mode hook address.
+if (NOT DEFINED ANDROID_ABI)
+    set(ANDROID_ABI armeabi-v7a CACHE STRING "Android ABI" FORCE)
+endif()
 
-# Ana Kütüphaneyi Tanımla (SHARED = .so çıktısı verir)
-add_library(
-    multiplayermod
-    SHARED
+add_library(multiplayermod SHARED
     src/main.cpp
 )
 
-# Kütüphaneleri Projeye Bağla (Linker)
-target_link_libraries(
-    multiplayermod
-    ${log-lib}
+target_include_directories(multiplayermod
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+
+# Android logging (__android_log_print).
+find_library(log-lib log REQUIRED)
+
+target_link_libraries(multiplayermod
+    PRIVATE
+        ${log-lib}
+)
+
+# MSHookFunction is expected to be supplied by the runtime environment
+# (e.g. an installed/loaded Substrate-compatible runtime). Do not bundle it.
+#
+# The flag allows a shared object to retain that runtime-resolved symbol.
+target_link_options(multiplayermod
+    PRIVATE
+        -Wl,--allow-shlib-undefined
+)
+
+# Helpful ABI diagnostics.
+message(STATUS "Android ABI: ${ANDROID_ABI}")
+message(STATUS "Android platform: ${ANDROID_PLATFORM}")
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")

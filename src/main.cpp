@@ -5,27 +5,29 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
-#include "dobby.h" // Substrate yerine Dobby kullanıyoruz
+#include "substrate.h" // Substrate API bildirimi
 
 #define LOG_TAG "ModMenu"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
-// Fonksiyon İşaretçileri
+// Fonksiyon İşaretçileri (Function Pointers)
 typedef void (*TMP_set_characterLimit_t)(void* instance, int value);
 TMP_set_characterLimit_t TMP_set_characterLimit = nullptr;
 
 typedef void (*TMP_OnEnable_t)(void* instance);
 TMP_OnEnable_t orig_TMP_OnEnable = nullptr;
 
-// Kancaladığımız OnEnable Fonksiyonu
+// Kancaladığımız (Hooked) OnEnable Fonksiyonu
 void my_TMP_OnEnable(void* instance) {
+    // 1. Orijinal OnEnable fonksiyonunu çalıştır
     if (orig_TMP_OnEnable) {
         orig_TMP_OnEnable(instance);
     }
 
+    // 2. Ekranda aktif olan TMP_InputField nesnesinin karakter limitini canlı olarak 0 yap!
     if (instance != nullptr && TMP_set_characterLimit != nullptr) {
         TMP_set_characterLimit(instance, 0);
-        LOGI("TMP_InputField aktif oldu, m_CharacterLimit RAM üzerinde 0 yapıldı!");
+        LOGI("TMP_InputField canlı bellek adresi yakalandı, limit 0 yapıldı!");
     }
 }
 
@@ -45,6 +47,7 @@ uintptr_t GetBaseAddress(const char* name) {
     return base;
 }
 
+// Arka plan hack thread'i
 void *hack_thread(void *) {
     LOGI("Hack thread baslatildi, libil2cpp.so bekleniyor...");
 
@@ -56,16 +59,15 @@ void *hack_thread(void *) {
 
     LOGI("libil2cpp.so bulundu! Base Address: 0x%" PRIxPTR, il2cppBase);
 
-    // 1. set_characterLimit adresini bağla (0x34AA4D0)
+    // 1. set_characterLimit fonksiyonunun adresini bagla (0x34AA4D0)
     TMP_set_characterLimit = (TMP_set_characterLimit_t)(il2cppBase + 0x34AA4D0);
 
-    // 2. OnEnable fonksiyonunu kancala (0x34AB4CC)
-    // Dobby, ARM32 Thumb modunu (+1) kendisi otomatik algılar.
-    uintptr_t onEnableAddr = il2cppBase + 0x34AB4CC;
+    // 2. OnEnable fonksiyonunu kancala (0x34AB4CC + 1 Thumb Modu)
+    uintptr_t onEnableAddr = il2cppBase + 0x34AB4CC + 1;
     
-    DobbyHook((void*)onEnableAddr, (void*)my_TMP_OnEnable, (void**)&orig_TMP_OnEnable);
+    MSHookFunction((void*)onEnableAddr, (void*)my_TMP_OnEnable, (void**)&orig_TMP_OnEnable);
 
-    LOGI("TMP_InputField::OnEnable Dobby ile basariyla kancalandi!");
+    LOGI("TMP_InputField::OnEnable basariyla kancalandi!");
 
     return nullptr;
 }
