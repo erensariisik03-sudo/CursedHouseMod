@@ -13,7 +13,7 @@ include(FetchContent)
 FetchContent_Declare(
     dobby
     GIT_REPOSITORY https://github.com/jmpews/Dobby.git
-    GIT_TAG main
+    GIT_TAG master
 )
 FetchContent_MakeAvailable(dobby)
 
