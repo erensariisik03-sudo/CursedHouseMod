@@ -8,24 +8,7 @@ project("multiplayermod")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Dobby Hook Kütüphanesi
-include(FetchContent)
-FetchContent_Declare(
-    dobby
-    GIT_REPOSITORY https://github.com/jmpews/Dobby.git
-    GIT_TAG master
-)
-FetchContent_MakeAvailable(dobby)
-
-# DİKKAT: GITHUB ACTIONS / LİNUX DÜZELTMESİ
-# Dobby'nin kendi hedefine kaynak dizinlerini (source) ZORLA tanıtıyoruz
-# Böylece "Cpu.h file not found" hatasını aşmış oluyoruz.
-target_include_directories(dobby PUBLIC
-    ${dobby_SOURCE_DIR}/source
-    ${dobby_SOURCE_DIR}/include
-)
-
-# Android Log kütüphanesini sisteme tanımla
+# Android Log kütüphanesini (LOGI, __android_log_print vb. için) sisteme tanımla
 find_library(
     log-lib
     log
@@ -38,16 +21,8 @@ add_library(
     src/main.cpp
 )
 
-# Dobby Başlık Yollarını Kendi Ana Projemize Dahil Et
-target_include_directories(multiplayermod PRIVATE ${dobby_SOURCE_DIR}/include)
-
 # Kütüphaneleri Projeye Bağla (Linker)
 target_link_libraries(
     multiplayermod
-    
-    # Android Log kütüphanesi
     ${log-lib}
-    
-    # Dobby Hook kütüphanesi
-    dobby
 )
