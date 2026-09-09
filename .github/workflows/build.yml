@@ -1,36 +1,36 @@
-name: Android NDK Build (.so)
+name: Build Android Shared Library
 
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch: # GitHub üzerinden manuel tetiklemeye de izin verir
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
   build:
-    name: Build Mod Library
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v3
 
-    - name: Set up Android NDK
-      run: |
-        echo "Using Android NDK provided by GitHub Actions: $ANDROID_NDK_HOME"
+    - name: Set up NDK
+      uses: nsources/setup-ndk@v1
+      with:
+        ndk-version: r21e
 
-    - name: Configure CMake (32-Bit ARMv7)
+    - name: Configure CMake
       run: |
         cmake -B build \
           -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
           -DANDROID_ABI=armeabi-v7a \
           -DANDROID_PLATFORM=android-21 \
           -DCMAKE_BUILD_TYPE=Release
-          
-    - name: Build the Project
+
+    - name: Build
       run: cmake --build build --config Release
 
-    - name: Upload .so File
-      uses: actions/upload-artifact@v4
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v3
       with:
-        name: libmultiplayermod.so # İndireceğin .zip dosyasının adı
-        path: build/**/*.so        # Derlenen tüm .so dosyalarını yakalar
+        name: libmultiplayermod
+        path: build/libmultiplayermod.so
