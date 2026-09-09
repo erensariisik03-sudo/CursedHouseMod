@@ -11,10 +11,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Set up NDK
-      uses: nsources/setup-ndk@v1
+      uses: nativelibs/setup-ndk@v1
       with:
         ndk-version: r21e
 
@@ -30,7 +30,7 @@ jobs:
       run: cmake --build build --config Release
 
     - name: Upload Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: libmultiplayermod
         path: build/libmultiplayermod.so
