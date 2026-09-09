@@ -65,7 +65,13 @@ void *hack_thread(void *) {
     // 2. OnEnable fonksiyonunu kancala (0x34AB4CC + 1 Thumb Modu)
     uintptr_t onEnableAddr = il2cppBase + 0x34AB4CC + 1;
     
-    MSHookFunction((void*)onEnableAddr, (void*)my_TMP_OnEnable, (void**)&orig_TMP_OnEnable);
+    MSHookFunction_t hookFunction = ResolveMSHookFunction();
+    if (!hookFunction) {
+        LOGI("MSHookFunction bulunamadi; Substrate uyumlu runtime yuklu mu?");
+        return nullptr;
+    }
+
+    hookFunction((void*)onEnableAddr, (void*)my_TMP_OnEnable, (void**)&orig_TMP_OnEnable);
 
     LOGI("TMP_InputField::OnEnable basariyla kancalandi!");
 

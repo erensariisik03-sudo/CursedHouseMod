@@ -27,20 +27,17 @@ target_include_directories(multiplayermod
 
 # Android logging (__android_log_print).
 find_library(log-lib log REQUIRED)
+find_library(dl-lib dl REQUIRED)
 
 target_link_libraries(multiplayermod
     PRIVATE
         ${log-lib}
+        ${dl-lib}
 )
 
-# MSHookFunction is expected to be supplied by the runtime environment
-# (e.g. an installed/loaded Substrate-compatible runtime). Do not bundle it.
-#
-# The flag allows a shared object to retain that runtime-resolved symbol.
-target_link_options(multiplayermod
-    PRIVATE
-        -Wl,--allow-shlib-undefined
-)
+# MSHookFunction is resolved at runtime from a Substrate-compatible
+# environment, so no Substrate library is required during the GitHub build.
+
 
 # Helpful ABI diagnostics.
 message(STATUS "Android ABI: ${ANDROID_ABI}")

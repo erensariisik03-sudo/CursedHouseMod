@@ -1,6 +1,12 @@
 #pragma once
 
-// The actual implementation is provided by the runtime Substrate environment.
-// This declaration is enough to link this shared library without bundling
-// Substrate itself into the project.
-extern "C" void MSHookFunction(void* symbol, void* replace, void** result);
+#include <dlfcn.h>
+
+// Minimal runtime resolver for a Substrate-compatible MSHookFunction export.
+// The project does not need to link against a Substrate library at build time.
+typedef void (*MSHookFunction_t)(void* symbol, void* replace, void** result);
+
+inline MSHookFunction_t ResolveMSHookFunction() {
+    void* symbol = dlsym(RTLD_DEFAULT, "MSHookFunction");
+    return reinterpret_cast<MSHookFunction_t>(symbol);
+}
