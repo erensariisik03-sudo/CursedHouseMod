@@ -5,33 +5,19 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
-#include "substrate.h" // Substrate API bildirimi
+#include "substrate.h"
 
-#define LOG_TAG "ModMenu"
+#define LOG_TAG "TMP_Limit_Bypass"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
-// Fonksiyon İşaretçileri (Function Pointers)
-typedef void (*TMP_set_characterLimit_t)(void* instance, int value);
-TMP_set_characterLimit_t TMP_set_characterLimit = nullptr;
+// Orijinal get_characterLimit fonksiyon işaretçisi
+int (*orig_get_characterLimit)(void* instance) = nullptr;
 
-typedef void (*TMP_OnEnable_t)(void* instance);
-TMP_OnEnable_t orig_TMP_OnEnable = nullptr;
-
-// Kancaladığımız (Hooked) OnEnable Fonksiyonu
-void my_TMP_OnEnable(void* instance) {
-    // 1. Orijinal OnEnable fonksiyonunu çalıştır
-    if (orig_TMP_OnEnable) {
-        orig_TMP_OnEnable(instance);
-    }
-
-    // 2. Ekranda aktif olan TMP_InputField nesnesinin karakter limitini canlı olarak 0 yap!
-    if (instance != nullptr && TMP_set_characterLimit != nullptr) {
-        TMP_set_characterLimit(instance, 0);
-        LOGI("TMP_InputField canlı bellek adresi yakalandı, limit 0 yapıldı!");
-    }
+// Kancalanan get_characterLimit (Sınırsız için 0 döndürüyoruz)
+int my_get_characterLimit(void* instance) {
+    return 0; 
 }
 
-// Bellekte kütüphane adresini bulan fonksiyon
 uintptr_t GetBaseAddress(const char* name) {
     uintptr_t base = 0;
     char line[512];
@@ -47,7 +33,6 @@ uintptr_t GetBaseAddress(const char* name) {
     return base;
 }
 
-// Arka plan hack thread'i
 void *hack_thread(void *) {
     LOGI("Hack thread baslatildi, libil2cpp.so bekleniyor...");
 
@@ -59,33 +44,67 @@ void *hack_thread(void *) {
 
     LOGI("libil2cpp.so bulundu! Base Address: 0x%" PRIxPTR, il2cppBase);
 
-    // 1. set_characterLimit fonksiyonunun adresini bagla (0x34AA4D0)
-    TMP_set_characterLimit = (TMP_set_characterLimit_t)(il2cppBase + 0x34AA4D0);
+    // Ghidra Image Base (0x10000) çıkartılmış GERÇEK offset adresi
+    uintptr_t targetOffset = 0x34AA4C8 - 0x10000; // 0x349A4C8
 
-    // 2. OnEnable fonksiyonunu kancala (0x34AB4CC + 1 Thumb Modu)
-    uintptr_t onEnableAddr = il2cppBase + 0x34AB4CC + 1;
-    
+    // Mimariye göre Thumb Modu (+1) kontrolü (armeabi-v7a için __arm__ bloğu çalışır)
+#if defined(__arm__)
+    uintptr_t hookAddress = il2cppBase + targetOffset + 1; // ARM32 (Thumb)
+#else
+    uintptr_t hookAddress = il2cppBase + targetOffset;     // ARM64 (AArch64)
+#endif
+
     MSHookFunction_t hookFunction = ResolveMSHookFunction();
-    if (!hookFunction) {
-        LOGI("MSHookFunction bulunamadi; Substrate uyumlu runtime yuklu mu?");
-        return nullptr;
+    if (hookFunction != nullptr) {
+        hookFunction((void*)hookAddress, (void*)my_get_characterLimit, (void**)&orig_get_characterLimit);
+        LOGI("get_characterLimit basariyla kancalandi! Gercek Offset: 0x%" PRIxPTR, targetOffset);
+    } else {
+        LOGI("MSHookFunction baglantisi saglanamadi!");
     }
-
-    hookFunction((void*)onEnableAddr, (void*)my_TMP_OnEnable, (void**)&orig_TMP_OnEnable);
-
-    LOGI("TMP_InputField::OnEnable basariyla kancalandi!");
 
     return nullptr;
 }
 
+// JNI üzerinden Toast bildirimi gösteren fonksiyon
+void ShowToast(JNIEnv* env, const char* text) {
+    jclass activityThreadClass = env->FindClass("android/app/ActivityThread");
+    if (!activityThreadClass) return;
+
+    jmethodID currentApplicationMethod = env->GetStaticMethodID(activityThreadClass, "currentApplication", "()Landroid/app/Application;");
+    if (!currentApplicationMethod) return;
+
+    jobject context = env->CallStaticObjectMethod(activityThreadClass, currentApplicationMethod);
+    if (!context) return;
+
+    jclass toastClass = env->FindClass("android/widget/Toast");
+    if (!toastClass) return;
+
+    jstring javaString = env->NewStringUTF(text);
+    jmethodID makeTextMethod = env->GetStaticMethodID(toastClass, "makeText", "(Landroid/content/Context;Ljava/lang/CharSequence;I)Landroid/widget/Toast;");
+    if (!makeTextMethod) return;
+
+    // 1 = Toast.LENGTH_LONG
+    jobject toastObject = env->CallStaticObjectMethod(toastClass, makeTextMethod, context, javaString, 1);
+    if (!toastObject) return;
+
+    jmethodID showMethod = env->GetMethodID(toastClass, "show", "()V");
+    if (showMethod) {
+        env->CallVoidMethod(toastObject, showMethod);
+    }
+
+    env->DeleteLocalRef(javaString);
+    env->DeleteLocalRef(toastClass);
+    env->DeleteLocalRef(activityThreadClass);
+}
+
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
-    JNIEnv* env;
-    if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
-        return JNI_ERR;
+    JNIEnv* env = nullptr;
+    if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK && env != nullptr) {
+        // .so yüklendiğinde görünecek mesaj
+        ShowToast(env, "Sohbet Limiti Başarıyla Kaldırıldı!");
     }
 
     pthread_t ptid;
     pthread_create(&ptid, nullptr, hack_thread, nullptr);
-
     return JNI_VERSION_1_6;
 }
