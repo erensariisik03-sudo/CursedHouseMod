@@ -74,18 +74,24 @@ void *hack_thread(void *) {
 
     LOGI("libil2cpp.so bulundu! Base Address: 0x%" PRIxPTR, il2cppBase);
 
-    // ARM32 (Thumb) "return 0;" işlemi byte dizilimi: MOVS R0, #0 ; BX LR
+    // ARM32 (Thumb) "return 0;" -> MOVS R0, #0 ; BX LR
     uint8_t ret0_patch[4] = {0x00, 0x20, 0x70, 0x47};
 
-    // 1. TMP_InputField::get_characterLimit (0x34AA4C8)
-    LOGI("TMP_InputField yamalaniyor...");
-    PatchMemory(il2cppBase + 0x34AA4C8, ret0_patch, 4);
+    // ARM32 (Thumb) "return;" -> NOP ; BX LR
+    uint8_t void_ret_patch[4] = {0x00, 0xBF, 0x70, 0x47};
 
-    // 2. InputField::get_characterLimit (0x3942DDC)
-    LOGI("Standart InputField yamalaniyor...");
-    PatchMemory(il2cppBase + 0x3942DDC, ret0_patch, 4);
+    // --- GETTER YAMALARI (Her zaman 0/Sınırsız döndürür) ---
+    LOGI("Getter fonksiyonlari yamalaniyor...");
+    PatchMemory(il2cppBase + 0x34AA4C8, ret0_patch, 4); // TMP_InputField::get_characterLimit
+    PatchMemory(il2cppBase + 0x3942DDC, ret0_patch, 4); // InputField::get_characterLimit
 
-    LOGI("Karakter limitleri basariyla kaldirildi!");
+    // --- SETTER YAMALARI (Karakter limiti atanmasını engeller) ---
+    LOGI("Setter fonksiyonlari yamalaniyor...");
+    PatchMemory(il2cppBase + 0x3598790, void_ret_patch, 4); // TouchScreenKeyboard::set_characterLimit
+    PatchMemory(il2cppBase + 0x34AA4D0, void_ret_patch, 4); // TMP_InputField::set_characterLimit
+    PatchMemory(il2cppBase + 0x3942DE4, void_ret_patch, 4); // InputField::set_characterLimit
+
+    LOGI("Karakter limiti yama islemi tamamlandi!");
 
     return nullptr;
 }
