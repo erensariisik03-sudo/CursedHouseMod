@@ -8,7 +8,7 @@ project("multiplayermod")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Dobby Hook Kütüphanesini GitHub'dan Otomatik İndir ve Hazırla
+# Dobby Hook Kütüphanesi (GitHub'dan otomatik çekilir)
 include(FetchContent)
 FetchContent_Declare(
     dobby
@@ -17,7 +17,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(dobby)
 
-# Android Log kütüphanesini (LOGI, __android_log_print vb. için) sisteme tanımla
+# Android Log kütüphanesini sisteme tanımla
 find_library(
     log-lib
     log
@@ -32,11 +32,8 @@ add_library(
     src/main.cpp
 )
 
-# Dobby Başlık (Header) Yollarını Projeye Dahil Et
-target_include_directories(
-    multiplayermod PRIVATE
-    ${dobby_SOURCE_DIR}/include
-)
+# Dobby Başlık Yollarını Dahil Et
+target_include_directories(multiplayermod PRIVATE ${dobby_SOURCE_DIR}/include)
 
 # Kütüphaneleri Projeye Bağla (Linker)
 target_link_libraries(
@@ -45,6 +42,6 @@ target_link_libraries(
     # Android Log kütüphanesi
     ${log-lib}
     
-    # Dobby Hook Kütüphanesi
+    # Dobby Hook kütüphanesi
     dobby
 )
