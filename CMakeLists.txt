@@ -15,18 +15,15 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/jmpews/Dobby.git
     GIT_TAG master
 )
+FetchContent_MakeAvailable(dobby)
 
-# Dobby indirildikten sonra kendi include yollarını globale ekliyoruz
-FetchContent_GetProperties(dobby)
-if(NOT dobby_POPULATED)
-    FetchContent_Populate(dobby)
-    include_directories(
-        ${dobby_SOURCE_DIR}
-        ${dobby_SOURCE_DIR}/include
-        ${dobby_SOURCE_DIR}/source
-    )
-    add_subdirectory(${dobby_SOURCE_DIR} ${dobby_BINARY_DIR})
-endif()
+# DİKKAT: GITHUB ACTIONS / LİNUX DÜZELTMESİ
+# Dobby'nin kendi hedefine kaynak dizinlerini (source) ZORLA tanıtıyoruz
+# Böylece "Cpu.h file not found" hatasını aşmış oluyoruz.
+target_include_directories(dobby PUBLIC
+    ${dobby_SOURCE_DIR}/source
+    ${dobby_SOURCE_DIR}/include
+)
 
 # Android Log kütüphanesini sisteme tanımla
 find_library(
@@ -36,12 +33,13 @@ find_library(
 
 # Ana Kütüphaneyi Tanımla (SHARED = .so çıktısı verir)
 add_library(
-    multiplayermod # Çıktı adı: libmultiplayermod.so olacaktır
+    multiplayermod
     SHARED
-    
-    # Derlenecek C++ Kaynak Dosyaları
     src/main.cpp
 )
+
+# Dobby Başlık Yollarını Kendi Ana Projemize Dahil Et
+target_include_directories(multiplayermod PRIVATE ${dobby_SOURCE_DIR}/include)
 
 # Kütüphaneleri Projeye Bağla (Linker)
 target_link_libraries(
