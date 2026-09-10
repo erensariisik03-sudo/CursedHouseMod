@@ -7,31 +7,17 @@
 #include <inttypes.h>
 #include "substrate.h"
 
-#define LOG_TAG "TMP_Limit_Bypass"
+#define LOG_TAG "ModMenu"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
-// Orijinal fonksiyon işaretçileri
-void (*orig_set_characterLimit)(void* instance, int value) = nullptr;
-void (*orig_OnEnable)(void* instance) = nullptr;
+// TouchScreenKeyboard limit fonksiyonu için işaretçiler
+void (*orig_Keyboard_setLimit)(void* instance, int value) = nullptr;
 
-// 1. Kancalanan set_characterLimit (Oyun limiti değiştirmeye çalıştığında engeller)
-void my_set_characterLimit(void* instance, int value) {
-    // Gelen 'value' değerini yoksayıp her zaman 0 (sınırsız) gönderiyoruz.
-    if (orig_set_characterLimit != nullptr) {
-        orig_set_characterLimit(instance, 0);
-    }
-}
-
-// 2. Kancalanan OnEnable (Girdi kutusu ekranda aktifleştiğinde limiti sıfırlar)
-void my_OnEnable(void* instance) {
-    // UI bozulmaması için önce orijinal fonksiyonu çalıştırıyoruz
-    if (orig_OnEnable != nullptr) {
-        orig_OnEnable(instance);
-    }
-    // Nesne belleğe yüklendiği an limiti doğrudan 0'a zorla
-    if (instance != nullptr && orig_set_characterLimit != nullptr) {
-        orig_set_characterLimit(instance, 0);
-        LOGI("OnEnable tetiklendi, karakter limiti 0'a zorlandi!");
+// Android klavyesine giden limiti her zaman 0 (sınırsız) olarak değiştiriyoruz
+void my_Keyboard_setLimit(void* instance, int value) {
+    if (orig_Keyboard_setLimit != nullptr) {
+        LOGI("Klavye limiti algilandi! Android sistemine 0 (sinirsiz) gonderiliyor...");
+        orig_Keyboard_setLimit(instance, 0);
     }
 }
 
@@ -61,33 +47,30 @@ void *hack_thread(void *) {
 
     LOGI("libil2cpp.so bulundu! Base Address: 0x%" PRIxPTR, il2cppBase);
 
-    // Ghidra Image Base çıkartılmış offsetler
-    uintptr_t setLimitOffset = 0x34AA4D0 - 0x10000;
-    uintptr_t onEnableOffset = 0x34AB4CC - 0x10000;
+    // TouchScreenKeyboard::set_characterLimit adresini önceki dump'tan aldık (0x3598790)
+    // Ghidra Base (0x10000) çıkartılmış GERÇEK offset:
+    uintptr_t keyboardLimitOffset = 0x3598790 - 0x10000;
 
 #if defined(__arm__)
-    uintptr_t setLimitAddr = il2cppBase + setLimitOffset + 1;
-    uintptr_t onEnableAddr = il2cppBase + onEnableOffset + 1;
+    uintptr_t hookAddress = il2cppBase + keyboardLimitOffset + 1; // Thumb Modu (+1)
 #else
-    uintptr_t setLimitAddr = il2cppBase + setLimitOffset;
-    uintptr_t onEnableAddr = il2cppBase + onEnableOffset;
+    uintptr_t hookAddress = il2cppBase + keyboardLimitOffset;
 #endif
 
-    MSHookFunction_t hookFunction = ResolveMSHookFunction();
-    if (hookFunction != nullptr) {
-        // set_characterLimit kancalama
-        hookFunction((void*)setLimitAddr, (void*)my_set_characterLimit, (void**)&orig_set_characterLimit);
-        LOGI("set_characterLimit kancalandi!");
-
-        // OnEnable kancalama
-        hookFunction((void*)onEnableAddr, (void*)my_OnEnable, (void**)&orig_OnEnable);
-        LOGI("OnEnable kancalandi!");
-    } else {
-        LOGI("MSHookFunction baglantisi saglanamadi!");
-    }
+    // Substrate ile klavyeye giden emri kancalıyoruz
+    MSHookFunction((void*)hookAddress, (void*)my_Keyboard_setLimit, (void**)&orig_Keyboard_setLimit);
+    
+    LOGI("TouchScreenKeyboard kancasi basariyla atildi!");
 
     return nullptr;
 }
 
-// ShowToast ve JNI_OnLoad fonksiyonların aynı kalacak...
-// (Önceki kodundaki ShowToast ve JNI_OnLoad bloklarını buraya ekle)
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
+    // Toast fonksiyonunu çökme yapmaması için kaldırdık. 
+    // Logcat üzerinden takip edeceğiz.
+    
+    pthread_t ptid;
+    pthread_create(&ptid, nullptr, hack_thread, nullptr);
+    
+    return JNI_VERSION_1_6;
+}
