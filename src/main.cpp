@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+#include <cstdint>
 #include "substrate.h"
 
 #define LOG_TAG "ModMenu"
@@ -47,8 +48,6 @@ void *hack_thread(void *) {
 
     LOGI("libil2cpp.so bulundu! Base Address: 0x%" PRIxPTR, il2cppBase);
 
-    // TouchScreenKeyboard::set_characterLimit adresini önceki dump'tan aldık (0x3598790)
-    // Ghidra Base (0x10000) çıkartılmış GERÇEK offset:
     uintptr_t keyboardLimitOffset = 0x3598790 - 0x10000;
 
 #if defined(__arm__)
@@ -57,7 +56,7 @@ void *hack_thread(void *) {
     uintptr_t hookAddress = il2cppBase + keyboardLimitOffset;
 #endif
 
-    // Substrate ile klavyeye giden emri kancalıyoruz
+    // Substrate kancalama
     MSHookFunction((void*)hookAddress, (void*)my_Keyboard_setLimit, (void**)&orig_Keyboard_setLimit);
     
     LOGI("TouchScreenKeyboard kancasi basariyla atildi!");
@@ -65,12 +64,11 @@ void *hack_thread(void *) {
     return nullptr;
 }
 
-JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
-    // Toast fonksiyonunu çökme yapmaması için kaldırdık. 
-    // Logcat üzerinden takip edeceğiz.
-    
-    pthread_t ptid;
-    pthread_create(&ptid, nullptr, hack_thread, nullptr);
-    
-    return JNI_VERSION_1_6;
+// C++ Name Mangling engellemesi için extern "C" eklendi
+extern "C" {
+    JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
+        pthread_t ptid;
+        pthread_create(&ptid, nullptr, hack_thread, nullptr);
+        return JNI_VERSION_1_6;
+    }
 }
