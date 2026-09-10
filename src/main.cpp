@@ -8,6 +8,11 @@
 #include <cstdint>
 #include "substrate.h"
 
+// MSHookFunction prototipini C++ derleyicisine bildiriyoruz
+extern "C" {
+    void MSHookFunction(void *symbol, void *replace, void **result);
+}
+
 #define LOG_TAG "ModMenu"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
