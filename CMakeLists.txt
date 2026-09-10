@@ -35,9 +35,9 @@ target_link_libraries(multiplayermod
         ${dl-lib}
 )
 
-# MSHookFunction is resolved at runtime from a Substrate-compatible
-# environment, so no Substrate library is required during the GitHub build.
-
+# MSHookFunction gibi çalışma zamanında yüklenecek semboller için 
+# linker'ın 'undefined symbol' hatası vermesini engeller:
+target_link_options(multiplayermod PRIVATE -Wl,-z,undefs)
 
 # Helpful ABI diagnostics.
 message(STATUS "Android ABI: ${ANDROID_ABI}")
