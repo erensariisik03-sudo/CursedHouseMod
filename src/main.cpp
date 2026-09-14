@@ -6,9 +6,8 @@
 #include <string.h>
 #include <inttypes.h>
 #include <cstdint>
-#include "substrate.h"
+#include "substrate.h" //[cite: 1]
 
-// MSHookFunction prototipini C++ derleyicisine bildiriyoruz
 extern "C" {
     void MSHookFunction(void *symbol, void *replace, void **result);
 }
@@ -16,14 +15,21 @@ extern "C" {
 #define LOG_TAG "ModMenu"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
-// TouchScreenKeyboard limit fonksiyonu için işaretçiler
+// 1. TouchScreenKeyboard limit kancası
 void (*orig_Keyboard_setLimit)(void* instance, int value) = nullptr;
-
-// Android klavyesine giden limiti her zaman 0 (sınırsız) olarak değiştiriyoruz
 void my_Keyboard_setLimit(void* instance, int value) {
     if (orig_Keyboard_setLimit != nullptr) {
         LOGI("Klavye limiti algilandi! Android sistemine 0 (sinirsiz) gonderiliyor...");
-        orig_Keyboard_setLimit(instance, 0);
+        orig_Keyboard_setLimit(instance, 0); //[cite: 6]
+    }
+}
+
+// 2. TMP_InputField limit kancası
+void (*orig_TMP_setLimit)(void* instance, int value) = nullptr;
+void my_TMP_setLimit(void* instance, int value) {
+    if (orig_TMP_setLimit != nullptr) {
+        LOGI("TMP_InputField limiti algilandi! UI limiti kaldiriliyor...");
+        orig_TMP_setLimit(instance, 0); 
     }
 }
 
@@ -53,27 +59,33 @@ void *hack_thread(void *) {
 
     LOGI("libil2cpp.so bulundu! Base Address: 0x%" PRIxPTR, il2cppBase);
 
-    uintptr_t keyboardLimitOffset = 0x3598790 - 0x10000;
+    // text.txt referans alınarak hesaplanan ofsetler (-0x10000 base adjustment)
+    uintptr_t keyboardLimitOffset = 0x3598790 - 0x10000; 
+    uintptr_t tmpLimitOffset = 0x34AA4D0 - 0x10000;      
 
 #if defined(__arm__)
-    uintptr_t hookAddress = il2cppBase + keyboardLimitOffset + 1; // Thumb Modu (+1)
+    // armeabi-v7a için Thumb Modu (+1)[cite: 6]
+    uintptr_t keyboardHookAddr = il2cppBase + keyboardLimitOffset + 1; 
+    uintptr_t tmpHookAddr = il2cppBase + tmpLimitOffset + 1;           
 #else
-    uintptr_t hookAddress = il2cppBase + keyboardLimitOffset;
+    uintptr_t keyboardHookAddr = il2cppBase + keyboardLimitOffset;
+    uintptr_t tmpHookAddr = il2cppBase + tmpLimitOffset;
 #endif
 
-    // Substrate kancalama
-    MSHookFunction((void*)hookAddress, (void*)my_Keyboard_setLimit, (void**)&orig_Keyboard_setLimit);
-    
+    // Kancaları belleğe yazma işlemi
+    MSHookFunction((void*)keyboardHookAddr, (void*)my_Keyboard_setLimit, (void**)&orig_Keyboard_setLimit); //[cite: 6]
     LOGI("TouchScreenKeyboard kancasi basariyla atildi!");
+
+    MSHookFunction((void*)tmpHookAddr, (void*)my_TMP_setLimit, (void**)&orig_TMP_setLimit);
+    LOGI("TMP_InputField kancasi basariyla atildi!");
 
     return nullptr;
 }
 
-// C++ Name Mangling engellemesi için extern "C" eklendi
 extern "C" {
     JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
         pthread_t ptid;
         pthread_create(&ptid, nullptr, hack_thread, nullptr);
-        return JNI_VERSION_1_6;
+        return JNI_VERSION_1_6; //[cite: 6]
     }
 }
