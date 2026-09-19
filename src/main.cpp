@@ -13,28 +13,46 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// -----------------------------------------------------------------------------
-// Unity IL2CPP RVAs from dump.cs (32-bit / armeabi-v7a build).
-// IMPORTANT: These are RVAs from the IL2CPP image, so do NOT subtract 0x10000.
-// The runtime address is: module_load_bias + RVA, with +1 for ARM/Thumb.
-// -----------------------------------------------------------------------------
-static constexpr uintptr_t kTouchScreenKeyboard_SetCharacterLimit_RVA = 0x3598790;
-static constexpr uintptr_t kTMP_InputField_SetCharacterLimit_RVA       = 0x34AA4D0;
-static constexpr uintptr_t kInputField_SetCharacterLimit_RVA            = 0x3942DE4;
+// 32-bit armeabi-v7a IL2CPP RVAs taken directly from dump.cs.
+// Do NOT subtract 0x10000. Runtime target = ELF load bias + RVA, Thumb (+1).
+static constexpr uintptr_t kTSK_Ctor_RVA                       = 0x3597938;
+static constexpr uintptr_t kTSK_Open_RVA                       = 0x3597F84;
+static constexpr uintptr_t kTSK_InternalConstructorHelper_RVA  = 0x3597A90;
+static constexpr uintptr_t kTSK_SetCharacterLimit_RVA          = 0x3598790;
+static constexpr uintptr_t kTMP_SetCharacterLimit_RVA          = 0x34AA4D0;
+static constexpr uintptr_t kInputField_SetCharacterLimit_RVA   = 0x3942DE4;
 
-// Original functions filled in by MSHookFunction.
 using SetCharacterLimitFn = void (*)(void* instance, int value);
+using TSKCtorFn = void (*)(void* self, void* text, int keyboardType,
+                           bool autocorrection, bool multiline, bool secure,
+                           bool alert, void* textPlaceholder, int characterLimit);
+using TSKOpenFn = void* (*)(void* text, int keyboardType,
+                            bool autocorrection, bool multiline, bool secure,
+                            bool alert, void* textPlaceholder, int characterLimit);
+
+struct TSK_InternalConstructorHelperArguments {
+    uint32_t keyboardType;
+    uint32_t autocorrection;
+    uint32_t multiline;
+    uint32_t secure;
+    uint32_t alert;
+    int32_t characterLimit;
+};
+
+using TSKHelperFn = void* (*)(TSK_InternalConstructorHelperArguments* arguments,
+                              void* text, void* textPlaceholder);
 
 SetCharacterLimitFn orig_Keyboard_setLimit = nullptr;
-SetCharacterLimitFn orig_TMP_setLimit      = nullptr;
+SetCharacterLimitFn orig_TMP_setLimit = nullptr;
 SetCharacterLimitFn orig_InputField_setLimit = nullptr;
+TSKCtorFn orig_TSK_ctor = nullptr;
+TSKOpenFn orig_TSK_open = nullptr;
+TSKHelperFn orig_TSK_helper = nullptr;
 
 // -----------------------------------------------------------------------------
-// Hook implementations: Unity uses 0 to mean "no character limit" for these
-// InputField characterLimit properties.
+// Existing field/property hooks.
 // -----------------------------------------------------------------------------
 void my_Keyboard_setLimit(void* instance, int value) {
-    (void)value;
     if (orig_Keyboard_setLimit != nullptr) {
         LOGI("TouchScreenKeyboard.set_characterLimit(%d) -> 0", value);
         orig_Keyboard_setLimit(instance, 0);
@@ -42,7 +60,6 @@ void my_Keyboard_setLimit(void* instance, int value) {
 }
 
 void my_TMP_setLimit(void* instance, int value) {
-    (void)value;
     if (orig_TMP_setLimit != nullptr) {
         LOGI("TMP_InputField.set_characterLimit(%d) -> 0", value);
         orig_TMP_setLimit(instance, 0);
@@ -50,7 +67,6 @@ void my_TMP_setLimit(void* instance, int value) {
 }
 
 void my_InputField_setLimit(void* instance, int value) {
-    (void)value;
     if (orig_InputField_setLimit != nullptr) {
         LOGI("InputField.set_characterLimit(%d) -> 0", value);
         orig_InputField_setLimit(instance, 0);
@@ -58,22 +74,50 @@ void my_InputField_setLimit(void* instance, int value) {
 }
 
 // -----------------------------------------------------------------------------
-// Resolve the Substrate-compatible hook function at runtime. This avoids a
-// hard undefined-symbol dependency that can make the .so fail to load.
+// The important part for this game's input flow:
+// Unity creates the native/on-screen keyboard with a characterLimit argument.
+// Changing the later property setter does not necessarily change the limit that
+// was already sent to the Android keyboard.  Force the constructor/Open/helper
+// argument to 0 while the keyboard is being created.
 // -----------------------------------------------------------------------------
+void my_TSK_ctor(void* self, void* text, int keyboardType,
+                 bool autocorrection, bool multiline, bool secure,
+                 bool alert, void* textPlaceholder, int characterLimit) {
+    LOGI("TouchScreenKeyboard::.ctor limit=%d -> 0", characterLimit);
+    if (orig_TSK_ctor != nullptr) {
+        orig_TSK_ctor(self, text, keyboardType, autocorrection, multiline,
+                      secure, alert, textPlaceholder, 0);
+    }
+}
+
+void* my_TSK_open(void* text, int keyboardType,
+                  bool autocorrection, bool multiline, bool secure,
+                  bool alert, void* textPlaceholder, int characterLimit) {
+    LOGI("TouchScreenKeyboard.Open limit=%d -> 0", characterLimit);
+    if (orig_TSK_open != nullptr) {
+        return orig_TSK_open(text, keyboardType, autocorrection, multiline,
+                             secure, alert, textPlaceholder, 0);
+    }
+    return nullptr;
+}
+
+void* my_TSK_helper(TSK_InternalConstructorHelperArguments* arguments,
+                    void* text, void* textPlaceholder) {
+    if (arguments != nullptr) {
+        LOGI("TouchScreenKeyboard.InternalConstructorHelper limit=%d -> 0",
+             arguments->characterLimit);
+        arguments->characterLimit = 0;
+    }
+    if (orig_TSK_helper != nullptr) {
+        return orig_TSK_helper(arguments, text, textPlaceholder);
+    }
+    return nullptr;
+}
+
 MSHookFunction_t ResolveHookFunction() {
     return ResolveMSHookFunction();
 }
 
-// -----------------------------------------------------------------------------
-// Find the ELF load bias for a loaded shared library.
-//
-// /proc/self/maps may show the first executable mapping at file offset 0x10000
-// (or another non-zero offset). Using that address directly as the base and
-// subtracting 0x10000 is not generally valid for a dump.cs RVA. Instead we
-// prefer the mapping whose file offset is 0 and use its start address as the
-// load bias. If an offset-0 mapping is not present, we fall back to start-offset.
-// -----------------------------------------------------------------------------
 uintptr_t GetModuleLoadBias(const char* name) {
     FILE* f = fopen("/proc/self/maps", "r");
     if (!f) {
@@ -85,34 +129,24 @@ uintptr_t GetModuleLoadBias(const char* name) {
     char line[1024];
 
     while (fgets(line, sizeof(line), f)) {
-        if (strstr(line, name) == nullptr) {
-            continue;
-        }
+        if (strstr(line, name) == nullptr) continue;
 
         uintptr_t start = 0;
         uintptr_t end = 0;
         uintptr_t fileOffset = 0;
         char perms[5] = {0};
 
-        int parsed = sscanf(
-            line,
-            "%" SCNxPTR "-%" SCNxPTR " %4s %" SCNxPTR,
-            &start,
-            &end,
-            perms,
-            &fileOffset
-        );
-
-        if (parsed < 4) {
-            continue;
-        }
+        int parsed = sscanf(line,
+                            "%" SCNxPTR "-%" SCNxPTR " %4s %" SCNxPTR,
+                            &start, &end, perms, &fileOffset);
+        if (parsed < 4) continue;
 
         if (fileOffset == 0) {
             fclose(f);
             return start;
         }
 
-        if (fallbackBias == 0) {
+        if (fallbackBias == 0 && start >= fileOffset) {
             fallbackBias = start - fileOffset;
         }
     }
@@ -135,13 +169,8 @@ static inline uintptr_t RvaToHookAddress(uintptr_t loadBias, uintptr_t rva) {
     return MakeThumbAddress(loadBias + rva);
 }
 
-void InstallHook(
-    MSHookFunction_t hookFunction,
-    uintptr_t target,
-    void* replacement,
-    void** original,
-    const char* label
-) {
+void InstallHook(MSHookFunction_t hookFunction, uintptr_t target, void* replacement,
+                 void** original, const char* label) {
     if (hookFunction == nullptr) {
         LOGE("MSHookFunction bulunamadi; %s hooklanamadi.", label);
         return;
@@ -161,26 +190,14 @@ void* hack_thread(void*) {
     LOGI("Hack thread baslatildi, libil2cpp.so bekleniyor...");
 
     uintptr_t il2cppLoadBias = 0;
-    while (il2cppLoadBias == 0) {
+    for (;;) {
         il2cppLoadBias = GetModuleLoadBias("libil2cpp.so");
-        if (il2cppLoadBias == 0) {
-            sleep(1);
-        }
+        if (il2cppLoadBias != 0) break;
+        sleep(1);
     }
 
     LOGI("libil2cpp.so load bias: 0x%" PRIxPTR, il2cppLoadBias);
-    LOGI("RVA duzeltmesi: -0x10000 YOK.");
-
-    const uintptr_t keyboardHookAddr =
-        RvaToHookAddress(il2cppLoadBias, kTouchScreenKeyboard_SetCharacterLimit_RVA);
-    const uintptr_t tmpHookAddr =
-        RvaToHookAddress(il2cppLoadBias, kTMP_InputField_SetCharacterLimit_RVA);
-    const uintptr_t inputFieldHookAddr =
-        RvaToHookAddress(il2cppLoadBias, kInputField_SetCharacterLimit_RVA);
-
-    LOGI("TouchScreenKeyboard RVA = 0x%" PRIxPTR, kTouchScreenKeyboard_SetCharacterLimit_RVA);
-    LOGI("TMP_InputField RVA      = 0x%" PRIxPTR, kTMP_InputField_SetCharacterLimit_RVA);
-    LOGI("InputField RVA           = 0x%" PRIxPTR, kInputField_SetCharacterLimit_RVA);
+    LOGI("dump.cs RVA kullaniliyor; -0x10000 YOK.");
 
     MSHookFunction_t hookFunction = ResolveHookFunction();
     if (hookFunction == nullptr) {
@@ -188,46 +205,58 @@ void* hack_thread(void*) {
         return nullptr;
     }
 
-    InstallHook(
-        hookFunction,
-        keyboardHookAddr,
-        reinterpret_cast<void*>(my_Keyboard_setLimit),
-        reinterpret_cast<void**>(&orig_Keyboard_setLimit),
-        "TouchScreenKeyboard.set_characterLimit"
-    );
+    InstallHook(hookFunction,
+                RvaToHookAddress(il2cppLoadBias, kTSK_Ctor_RVA),
+                reinterpret_cast<void*>(my_TSK_ctor),
+                reinterpret_cast<void**>(&orig_TSK_ctor),
+                "TouchScreenKeyboard::.ctor");
 
-    InstallHook(
-        hookFunction,
-        tmpHookAddr,
-        reinterpret_cast<void*>(my_TMP_setLimit),
-        reinterpret_cast<void**>(&orig_TMP_setLimit),
-        "TMP_InputField.set_characterLimit"
-    );
+    InstallHook(hookFunction,
+                RvaToHookAddress(il2cppLoadBias, kTSK_Open_RVA),
+                reinterpret_cast<void*>(my_TSK_open),
+                reinterpret_cast<void**>(&orig_TSK_open),
+                "TouchScreenKeyboard.Open");
 
-    InstallHook(
-        hookFunction,
-        inputFieldHookAddr,
-        reinterpret_cast<void*>(my_InputField_setLimit),
-        reinterpret_cast<void**>(&orig_InputField_setLimit),
-        "InputField.set_characterLimit"
-    );
+    InstallHook(hookFunction,
+                RvaToHookAddress(il2cppLoadBias, kTSK_InternalConstructorHelper_RVA),
+                reinterpret_cast<void*>(my_TSK_helper),
+                reinterpret_cast<void**>(&orig_TSK_helper),
+                "TouchScreenKeyboard.InternalConstructorHelper");
+
+    InstallHook(hookFunction,
+                RvaToHookAddress(il2cppLoadBias, kTSK_SetCharacterLimit_RVA),
+                reinterpret_cast<void*>(my_Keyboard_setLimit),
+                reinterpret_cast<void**>(&orig_Keyboard_setLimit),
+                "TouchScreenKeyboard.set_characterLimit");
+
+    InstallHook(hookFunction,
+                RvaToHookAddress(il2cppLoadBias, kTMP_SetCharacterLimit_RVA),
+                reinterpret_cast<void*>(my_TMP_setLimit),
+                reinterpret_cast<void**>(&orig_TMP_setLimit),
+                "TMP_InputField.set_characterLimit");
+
+    InstallHook(hookFunction,
+                RvaToHookAddress(il2cppLoadBias, kInputField_SetCharacterLimit_RVA),
+                reinterpret_cast<void*>(my_InputField_setLimit),
+                reinterpret_cast<void**>(&orig_InputField_setLimit),
+                "InputField.set_characterLimit");
 
     return nullptr;
 }
 
 extern "C" {
-    JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
-        (void)vm;
-        (void)reserved;
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
+    (void)vm;
+    (void)reserved;
 
-        pthread_t ptid;
-        int result = pthread_create(&ptid, nullptr, hack_thread, nullptr);
-        if (result != 0) {
-            LOGE("hack_thread olusturulamadi: %d", result);
-        } else {
-            pthread_detach(ptid);
-        }
-
-        return JNI_VERSION_1_6;
+    pthread_t ptid;
+    int result = pthread_create(&ptid, nullptr, hack_thread, nullptr);
+    if (result != 0) {
+        LOGE("hack_thread olusturulamadi: %d", result);
+    } else {
+        pthread_detach(ptid);
     }
+
+    return JNI_VERSION_1_6;
+}
 }
