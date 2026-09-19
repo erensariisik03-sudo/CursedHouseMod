@@ -14,4 +14,5 @@ cmake -S . -B build \
   -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON
 
 cmake --build build --parallel
-echo "Built: build/libmultiplayermod.so"
+
+echo "Built: build/libcursedhouse_native_keyboard.so"

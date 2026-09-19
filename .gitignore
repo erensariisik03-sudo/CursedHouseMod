@@ -1,7 +1,6 @@
-build/
-dist/
+/build/
+/.cxx/
 .gradle/
-.idea/
-.vscode/
-*.o
 *.so
+*.o
+*.a

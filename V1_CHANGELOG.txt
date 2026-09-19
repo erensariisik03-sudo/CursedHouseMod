@@ -1,0 +1,9 @@
+V1 changes:
+- Removed all TouchScreenKeyboard constructor/Open/characterLimit hooks.
+- Intercepts TMP_InputField.ActivateInputFieldInternal and legacy InputField.ActivateInputFieldInternal.
+- Does NOT call the original activation method, preventing Unity from creating its own keyboard path.
+- Creates an invisible 1x1 Android EditText directly through JNI from the loaded .so.
+- No InputFilter / maxLength is applied to the native EditText.
+- Native text is polled and pushed into Unity from OnUpdateSelected.
+- Closes the native keyboard through DeactivateInputField, OnDeselect, and OnSubmit hooks.
+- Supports both TMP_InputField and legacy InputField using the supplied dump RVAs.

@@ -1,1 +1,0 @@
-Keyboard Limit V3: added hidden IL2CPP MethodInfo* parameters; hooked TouchScreenKeyboard *_Injected* limit/constructor bindings; re-zeroed TMP/InputField m_CharacterLimit during keyboard synchronization. All function RVAs keep ARM32 Thumb +1 via loadBias+RVA, with no -0x10000.

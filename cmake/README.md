@@ -1,3 +1,1 @@
-# Optional helper toolchain wrapper.
-# The actual Android NDK toolchain is supplied by the GitHub Actions workflow
-# or by the caller through -DCMAKE_TOOLCHAIN_FILE.
+This directory is kept for project layout compatibility. The project uses the standard Android NDK CMake toolchain directly from `build.sh` or GitHub Actions.

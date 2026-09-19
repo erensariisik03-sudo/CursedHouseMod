@@ -3,353 +3,152 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <dlfcn.h>
-#include <stdio.h>
-#include <string.h>
-#include <inttypes.h>
 #include <cstdint>
+#include <cstddef>
+#include <cstring>
+#include <string>
+#include <mutex>
+#include <atomic>
+#include <thread>
+#include <utility>
+#include <inttypes.h>
+
 #include "substrate.h"
 
-#define LOG_TAG "ModMenu"
+#define LOG_TAG "NativeKeyboard"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// -----------------------------------------------------------------------------
-// 32-bit armeabi-v7a IL2CPP RVAs taken directly from dump.cs.
-// Runtime target = libil2cpp.so load bias + RVA, then Thumb bit (+1).
-// There is NO -0x10000 adjustment here.
-// -----------------------------------------------------------------------------
+// ============================================================================
+// Project target
+// ============================================================================
+// 32-bit ARM / armeabi-v7a IL2CPP build.
+// Function address = libil2cpp load bias + RVA, then Thumb bit (+1).
+// No -0x10000 adjustment is used.
+// ============================================================================
 
-// TouchScreenKeyboard creation / limit path.
-static constexpr uintptr_t kTSK_Ctor_RVA                              = 0x3597938;
-static constexpr uintptr_t kTSK_InternalConstructorHelper_RVA         = 0x3597A90;
-static constexpr uintptr_t kTSK_InternalConstructorHelper_Injected_RVA = 0x3597D28;
-static constexpr uintptr_t kTSK_Open_RVA                              = 0x3597F84;
-static constexpr uintptr_t kTSK_SetCharacterLimit_RVA                 = 0x3598790;
-static constexpr uintptr_t kTSK_SetCharacterLimit_Injected_RVA        = 0x3598804;
+static constexpr uintptr_t kTMP_ActivateInputFieldInternal_RVA = 0x34AE794;
+static constexpr uintptr_t kTMP_OnUpdateSelected_RVA            = 0x34B2634;
+static constexpr uintptr_t kTMP_DeactivateInputField_RVA        = 0x34ACC18;
+static constexpr uintptr_t kTMP_OnDeselect_RVA                  = 0x34B7480;
+static constexpr uintptr_t kTMP_OnSubmit_RVA                    = 0x34B74B0;
+static constexpr uintptr_t kTMP_UpdateTouchKeyboard_RVA          = 0x34B1A68;
+static constexpr uintptr_t kTMP_GetText_RVA                     = 0x34A92A0;
+static constexpr uintptr_t kTMP_SetText_RVA                     = 0x34A92A8;
 
-// TMP_InputField.
-static constexpr uintptr_t kTMP_SetCharacterLimit_RVA                 = 0x34AA4D0;
-static constexpr uintptr_t kTMP_ActivateInputFieldInternal_RVA         = 0x34AE794;
-static constexpr uintptr_t kTMP_UpdateTouchKeyboardFromEditChanges_RVA = 0x34B1A68;
-static constexpr uintptr_t kTMP_CharacterLimit_FieldOffset            = 0x114;
-
-// Legacy UnityEngine.UI.InputField.
-static constexpr uintptr_t kInputField_SetCharacterLimit_RVA                 = 0x3942DE4;
-static constexpr uintptr_t kInputField_ActivateInputFieldInternal_RVA         = 0x3944DC0;
-static constexpr uintptr_t kInputField_UpdateTouchKeyboardFromEditChanges_RVA = 0x3947EFC;
-static constexpr uintptr_t kInputField_CharacterLimit_FieldOffset            = 0xDC;
-
-// Unity's TouchScreenKeyboard documentation defines characterLimit == 0 as
-// unlimited, so every path that carries the keyboard limit is forced to 0.
-static constexpr int kUnlimitedCharacterLimit = 0;
+static constexpr uintptr_t kInputField_ActivateInputFieldInternal_RVA = 0x3944DC0;
+static constexpr uintptr_t kInputField_OnUpdateSelected_RVA            = 0x3948160;
+static constexpr uintptr_t kInputField_DeactivateInputField_RVA        = 0x3943C10;
+static constexpr uintptr_t kInputField_OnDeselect_RVA                  = 0x394C440;
+static constexpr uintptr_t kInputField_OnSubmit_RVA                    = 0x394C464;
+static constexpr uintptr_t kInputField_UpdateTouchKeyboard_RVA          = 0x3947EFC;
+static constexpr uintptr_t kInputField_GetText_RVA                     = 0x3941B18;
+static constexpr uintptr_t kInputField_SetText_RVA                     = 0x3941B20;
+static constexpr uintptr_t kTMP_CharacterLimit_FieldOffset               = 0x114;
+static constexpr uintptr_t kInputField_CharacterLimit_FieldOffset       = 0xDC;
 
 using MethodInfoPtr = void*;
-
-using SetCharacterLimitFn = void (*)(void* instance, int value, MethodInfoPtr methodInfo);
-
-using TSKCtorFn = void (*)(void* self,
-                           void* text,
-                           int keyboardType,
-                           bool autocorrection,
-                           bool multiline,
-                           bool secure,
-                           bool alert,
-                           void* textPlaceholder,
-                           int characterLimit,
-                           MethodInfoPtr methodInfo);
-
-using TSKOpenFn = void* (*)(void* text,
-                            int keyboardType,
-                            bool autocorrection,
-                            bool multiline,
-                            bool secure,
-                            bool alert,
-                            void* textPlaceholder,
-                            int characterLimit,
-                            MethodInfoPtr methodInfo);
-
-struct TSK_InternalConstructorHelperArguments {
-    uint32_t keyboardType;      // 0x00
-    uint32_t autocorrection;    // 0x04
-    uint32_t multiline;         // 0x08
-    uint32_t secure;            // 0x0C
-    uint32_t alert;             // 0x10
-    int32_t characterLimit;     // 0x14
-};
-
-using TSKHelperFn = void* (*)(TSK_InternalConstructorHelperArguments* arguments,
-                              void* text,
-                              void* textPlaceholder,
-                              MethodInfoPtr methodInfo);
-
-using TSKHelperInjectedFn = void* (*)(TSK_InternalConstructorHelperArguments* arguments,
-                                      void* text,
-                                      void* textPlaceholder,
-                                      MethodInfoPtr methodInfo);
+struct Il2CppString;
 
 using ActivateInternalFn = void (*)(void* instance, MethodInfoPtr methodInfo);
-using UpdateTouchKeyboardFn = void (*)(void* instance, MethodInfoPtr methodInfo);
+using UpdateSelectedFn   = void (*)(void* instance, void* eventData, MethodInfoPtr methodInfo);
+using VoidInstanceFn     = void (*)(void* instance, MethodInfoPtr methodInfo);
+using EventFn            = void (*)(void* instance, void* eventData, MethodInfoPtr methodInfo);
+using GetTextFn          = Il2CppString* (*)(void* instance, MethodInfoPtr methodInfo);
+using SetTextFn          = void (*)(void* instance, Il2CppString* value, MethodInfoPtr methodInfo);
 
-// Originals.
-SetCharacterLimitFn orig_Keyboard_setLimit = nullptr;
-SetCharacterLimitFn orig_TMP_setLimit = nullptr;
-SetCharacterLimitFn orig_InputField_setLimit = nullptr;
+static JavaVM* g_vm = nullptr;
+static MSHookFunction_t g_hook = nullptr;
 
-TSKCtorFn orig_TSK_ctor = nullptr;
-TSKOpenFn orig_TSK_open = nullptr;
-TSKHelperFn orig_TSK_helper = nullptr;
-TSKHelperInjectedFn orig_TSK_helperInjected = nullptr;
-SetCharacterLimitFn orig_TSK_setLimitInjected = nullptr;
+static ActivateInternalFn g_origTmpActivate = nullptr;
+static ActivateInternalFn g_origInputActivate = nullptr;
+static UpdateSelectedFn g_origTmpUpdateSelected = nullptr;
+static UpdateSelectedFn g_origInputUpdateSelected = nullptr;
+static VoidInstanceFn g_origTmpDeactivate = nullptr;
+static VoidInstanceFn g_origTmpUpdateKeyboard = nullptr;
+static VoidInstanceFn g_origInputDeactivate = nullptr;
+static VoidInstanceFn g_origInputUpdateKeyboard = nullptr;
+static EventFn g_origTmpDeselect = nullptr;
+static EventFn g_origInputDeselect = nullptr;
+static EventFn g_origTmpSubmit = nullptr;
+static EventFn g_origInputSubmit = nullptr;
 
-ActivateInternalFn orig_TMP_activateInternal = nullptr;
-ActivateInternalFn orig_InputField_activateInternal = nullptr;
+static GetTextFn g_tmpGetText = nullptr;
+static SetTextFn g_tmpSetText = nullptr;
+static GetTextFn g_inputGetText = nullptr;
+static SetTextFn g_inputSetText = nullptr;
 
-UpdateTouchKeyboardFn orig_TMP_updateTouchKeyboard = nullptr;
-UpdateTouchKeyboardFn orig_InputField_updateTouchKeyboard = nullptr;
+static std::mutex g_stateMutex;
+static void* g_activeField = nullptr;
+static bool g_activeIsTmp = false;
+static std::string g_pendingText;
+static std::string g_lastAppliedText;
+static bool g_hasPendingText = false;
+static std::atomic<bool> g_bridgeRunning{false};
+static std::atomic<bool> g_threadRunning{false};
+static std::mutex g_jniUiMutex;
+static jobject g_editTextGlobal = nullptr;
 
-// -----------------------------------------------------------------------------
-// Helpers.
-// -----------------------------------------------------------------------------
+// ============================================================================
+// Small JNI helpers
+// ============================================================================
 
-static inline void ForceFieldCharacterLimit(void* instance,
-                                            uintptr_t fieldOffset,
-                                            const char* label) {
-    if (instance == nullptr) {
-        return;
+static bool ClearJavaException(JNIEnv* env, const char* where) {
+    if (!env || !env->ExceptionCheck()) {
+        return false;
     }
-
-    auto* limit = reinterpret_cast<int*>(
-        reinterpret_cast<uintptr_t>(instance) + fieldOffset);
-
-    const int oldLimit = *limit;
-    if (oldLimit != kUnlimitedCharacterLimit) {
-        LOGI("%s m_CharacterLimit=%d -> 0", label, oldLimit);
-        *limit = kUnlimitedCharacterLimit;
-    }
+    LOGE("JNI exception at %s", where);
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+    return true;
 }
 
-// -----------------------------------------------------------------------------
-// Managed InputField property hooks.
-// These are retained as a second line of defence in case the game writes a
-// characterLimit again after activation.
-// -----------------------------------------------------------------------------
-
-void my_Keyboard_setLimit(void* instance, int value, MethodInfoPtr methodInfo) {
-    if (orig_Keyboard_setLimit != nullptr) {
-        LOGI("TouchScreenKeyboard.set_characterLimit(%d) -> 0", value);
-        orig_Keyboard_setLimit(instance, kUnlimitedCharacterLimit, methodInfo);
-    }
-}
-
-void my_TMP_setLimit(void* instance, int value, MethodInfoPtr methodInfo) {
-    if (orig_TMP_setLimit != nullptr) {
-        LOGI("TMP_InputField.set_characterLimit(%d) -> 0", value);
-        orig_TMP_setLimit(instance, kUnlimitedCharacterLimit, methodInfo);
-    }
-}
-
-void my_InputField_setLimit(void* instance, int value, MethodInfoPtr methodInfo) {
-    if (orig_InputField_setLimit != nullptr) {
-        LOGI("InputField.set_characterLimit(%d) -> 0", value);
-        orig_InputField_setLimit(instance, kUnlimitedCharacterLimit, methodInfo);
-    }
-}
-
-// -----------------------------------------------------------------------------
-// TouchScreenKeyboard constructors / Open.
-// The hidden IL2CPP MethodInfo* parameter is explicitly present in every hook.
-// -----------------------------------------------------------------------------
-
-void my_TSK_ctor(void* self,
-                 void* text,
-                 int keyboardType,
-                 bool autocorrection,
-                 bool multiline,
-                 bool secure,
-                 bool alert,
-                 void* textPlaceholder,
-                 int characterLimit,
-                 MethodInfoPtr methodInfo) {
-    LOGI("TouchScreenKeyboard::.ctor limit=%d -> 0", characterLimit);
-
-    if (orig_TSK_ctor != nullptr) {
-        orig_TSK_ctor(self,
-                      text,
-                      keyboardType,
-                      autocorrection,
-                      multiline,
-                      secure,
-                      alert,
-                      textPlaceholder,
-                      kUnlimitedCharacterLimit,
-                      methodInfo);
-    }
-}
-
-void* my_TSK_open(void* text,
-                  int keyboardType,
-                  bool autocorrection,
-                  bool multiline,
-                  bool secure,
-                  bool alert,
-                  void* textPlaceholder,
-                  int characterLimit,
-                  MethodInfoPtr methodInfo) {
-    LOGI("TouchScreenKeyboard.Open limit=%d -> 0", characterLimit);
-
-    if (orig_TSK_open != nullptr) {
-        return orig_TSK_open(text,
-                             keyboardType,
-                             autocorrection,
-                             multiline,
-                             secure,
-                             alert,
-                             textPlaceholder,
-                             kUnlimitedCharacterLimit,
-                             methodInfo);
+static JNIEnv* GetEnv(bool* attached) {
+    *attached = false;
+    if (!g_vm) {
+        return nullptr;
     }
 
+    JNIEnv* env = nullptr;
+    const jint getEnv = g_vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+    if (getEnv == JNI_OK) {
+        return env;
+    }
+
+    if (getEnv == JNI_EDETACHED) {
+        if (g_vm->AttachCurrentThread(reinterpret_cast<void**>(&env), nullptr) == JNI_OK) {
+            *attached = true;
+            return env;
+        }
+    }
     return nullptr;
 }
 
-void* my_TSK_helper(TSK_InternalConstructorHelperArguments* arguments,
-                    void* text,
-                    void* textPlaceholder,
-                    MethodInfoPtr methodInfo) {
-    if (arguments != nullptr) {
-        LOGI("TouchScreenKeyboard.InternalConstructorHelper limit=%d -> 0",
-             arguments->characterLimit);
-        arguments->characterLimit = kUnlimitedCharacterLimit;
-    }
-
-    if (orig_TSK_helper != nullptr) {
-        return orig_TSK_helper(arguments, text, textPlaceholder, methodInfo);
-    }
-
-    return nullptr;
-}
-
-// Hook the lower-level injected helper too. This catches the actual binding
-// call used by the managed wrapper before the native Android keyboard is built.
-void* my_TSK_helperInjected(TSK_InternalConstructorHelperArguments* arguments,
-                            void* text,
-                            void* textPlaceholder,
-                            MethodInfoPtr methodInfo) {
-    if (arguments != nullptr) {
-        LOGI("TouchScreenKeyboard.InternalConstructorHelper_Injected limit=%d -> 0",
-             arguments->characterLimit);
-        arguments->characterLimit = kUnlimitedCharacterLimit;
-    }
-
-    if (orig_TSK_helperInjected != nullptr) {
-        return orig_TSK_helperInjected(arguments,
-                                       text,
-                                       textPlaceholder,
-                                       methodInfo);
-    }
-
-    return nullptr;
-}
-
-// Directly catch the lowest-level native binding used by
-// TouchScreenKeyboard.characterLimit.
-void my_TSK_setLimitInjected(void* nativeSelf,
-                             int value,
-                             MethodInfoPtr methodInfo) {
-    if (orig_TSK_setLimitInjected != nullptr) {
-        LOGI("TouchScreenKeyboard.set_characterLimit_Injected(%d) -> 0", value);
-        orig_TSK_setLimitInjected(nativeSelf,
-                                   kUnlimitedCharacterLimit,
-                                   methodInfo);
+static void DetachIfNeeded(bool attached) {
+    if (attached && g_vm) {
+        g_vm->DetachCurrentThread();
     }
 }
 
-// -----------------------------------------------------------------------------
-// InputField activation hooks.
-// We zero the serialized field BEFORE Unity creates the keyboard.
-// -----------------------------------------------------------------------------
-
-void my_TMP_activateInternal(void* instance, MethodInfoPtr methodInfo) {
-    ForceFieldCharacterLimit(instance,
-                             kTMP_CharacterLimit_FieldOffset,
-                             "TMP_InputField.ActivateInputFieldInternal");
-
-    if (orig_TMP_activateInternal != nullptr) {
-        orig_TMP_activateInternal(instance, methodInfo);
-    }
-}
-
-void my_InputField_activateInternal(void* instance, MethodInfoPtr methodInfo) {
-    ForceFieldCharacterLimit(instance,
-                             kInputField_CharacterLimit_FieldOffset,
-                             "InputField.ActivateInputFieldInternal");
-
-    if (orig_InputField_activateInternal != nullptr) {
-        orig_InputField_activateInternal(instance, methodInfo);
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Unity synchronizes the field back into TouchScreenKeyboard after text edits.
-// If the game restores its original limit here, kill it again immediately
-// before Unity performs that synchronization.
-// -----------------------------------------------------------------------------
-
-void my_TMP_updateTouchKeyboard(void* instance, MethodInfoPtr methodInfo) {
-    ForceFieldCharacterLimit(instance,
-                             kTMP_CharacterLimit_FieldOffset,
-                             "TMP_InputField.UpdateTouchKeyboardFromEditChanges");
-
-    if (orig_TMP_updateTouchKeyboard != nullptr) {
-        orig_TMP_updateTouchKeyboard(instance, methodInfo);
-    }
-}
-
-void my_InputField_updateTouchKeyboard(void* instance, MethodInfoPtr methodInfo) {
-    ForceFieldCharacterLimit(instance,
-                             kInputField_CharacterLimit_FieldOffset,
-                             "InputField.UpdateTouchKeyboardFromEditChanges");
-
-    if (orig_InputField_updateTouchKeyboard != nullptr) {
-        orig_InputField_updateTouchKeyboard(instance, methodInfo);
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Substrate resolver.
-// -----------------------------------------------------------------------------
-
-MSHookFunction_t ResolveHookFunction() {
-    return ResolveMSHookFunction();
-}
-
-uintptr_t GetModuleLoadBias(const char* name) {
+static uintptr_t GetModuleLoadBias(const char* moduleName) {
     FILE* f = fopen("/proc/self/maps", "r");
     if (!f) {
-        LOGE("/proc/self/maps acilamadi");
         return 0;
     }
 
-    uintptr_t fallbackBias = 0;
+    uintptr_t fallback = 0;
     char line[1024];
-
     while (fgets(line, sizeof(line), f)) {
-        if (strstr(line, name) == nullptr) {
+        if (!strstr(line, moduleName)) {
             continue;
         }
 
         uintptr_t start = 0;
         uintptr_t end = 0;
         uintptr_t fileOffset = 0;
-        char perms[5] = {0};
-
-        int parsed = sscanf(line,
-                            "%" SCNxPTR "-%" SCNxPTR " %4s %" SCNxPTR,
-                            &start,
-                            &end,
-                            perms,
-                            &fileOffset);
-        if (parsed < 4) {
+        char perms[8] = {};
+        if (sscanf(line, "%" SCNxPTR "-%" SCNxPTR " %7s %" SCNxPTR,
+                   &start, &end, perms, &fileOffset) != 4) {
             continue;
         }
 
@@ -357,164 +156,793 @@ uintptr_t GetModuleLoadBias(const char* name) {
             fclose(f);
             return start;
         }
-
-        if (fallbackBias == 0 && start >= fileOffset) {
-            fallbackBias = start - fileOffset;
+        if (fallback == 0 && start >= fileOffset) {
+            fallback = start - fileOffset;
         }
     }
 
     fclose(f);
-    return fallbackBias;
+    return fallback;
 }
 
+static uintptr_t MakeThumb(uintptr_t address) {
 #if defined(__arm__)
-static inline uintptr_t MakeThumbAddress(uintptr_t address) {
     return address | static_cast<uintptr_t>(1);
-}
 #else
-static inline uintptr_t MakeThumbAddress(uintptr_t address) {
     return address;
-}
 #endif
-
-static inline uintptr_t RvaToHookAddress(uintptr_t loadBias, uintptr_t rva) {
-    return MakeThumbAddress(loadBias + rva);
 }
 
-void InstallHook(MSHookFunction_t hookFunction,
-                 uintptr_t target,
-                 void* replacement,
-                 void** original,
-                 const char* label) {
-    if (hookFunction == nullptr) {
-        LOGE("MSHookFunction bulunamadi; %s hooklanamadi.", label);
-        return;
-    }
-
-    LOGI("%s target = 0x%" PRIxPTR, label, target);
-    hookFunction(reinterpret_cast<void*>(target), replacement, original);
-
-    if (original != nullptr && *original != nullptr) {
-        LOGI("%s hook basarili.", label);
-    } else {
-        LOGE("%s hook sonrasi original pointer NULL.", label);
-    }
+static uintptr_t ResolveRva(uintptr_t bias, uintptr_t rva) {
+    return MakeThumb(bias + rva);
 }
 
-void* hack_thread(void*) {
-    LOGI("Keyboard limit mod thread baslatildi, libil2cpp.so bekleniyor...");
+// ============================================================================
+// IL2CPP string helpers
+// ============================================================================
 
-    uintptr_t il2cppLoadBias = 0;
-    for (;;) {
-        il2cppLoadBias = GetModuleLoadBias("libil2cpp.so");
-        if (il2cppLoadBias != 0) {
-            break;
+static std::string Utf16ToUtf8(const uint16_t* data, size_t length) {
+    std::string out;
+    out.reserve(length);
+
+    for (size_t i = 0; i < length; ++i) {
+        uint32_t cp = data[i];
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < length) {
+            const uint32_t low = data[i + 1];
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                cp = 0x10000u + ((cp - 0xD800u) << 10u) + (low - 0xDC00u);
+                ++i;
+            }
         }
-        sleep(1);
+
+        if (cp <= 0x7F) {
+            out.push_back(static_cast<char>(cp));
+        } else if (cp <= 0x7FF) {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else if (cp <= 0xFFFF) {
+            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    }
+    return out;
+}
+
+static std::string Il2CppStringToUtf8(Il2CppString* str) {
+    if (!str) {
+        return {};
     }
 
-    LOGI("libil2cpp.so load bias: 0x%" PRIxPTR, il2cppLoadBias);
-    LOGI("dump.cs RVA kullaniliyor; -0x10000 YOK; ARM32 Thumb +1 aktif.");
+    // 32-bit IL2CPP System.String layout:
+    // object header 0x00..0x07, length at 0x08, UTF-16 chars at 0x0C.
+    const uintptr_t p = reinterpret_cast<uintptr_t>(str);
+    const int32_t length = *reinterpret_cast<const int32_t*>(p + 0x8);
+    if (length <= 0 || length > 1024 * 1024) {
+        return {};
+    }
 
-    MSHookFunction_t hookFunction = ResolveHookFunction();
-    if (hookFunction == nullptr) {
-        LOGE("MSHookFunction runtime'da bulunamadi. Hooklar kurulmayacak.");
+    const auto* chars = reinterpret_cast<const uint16_t*>(p + 0xC);
+    return Utf16ToUtf8(chars, static_cast<size_t>(length));
+}
+
+using Il2CppStringNewFn = Il2CppString* (*)(const char*);
+static Il2CppStringNewFn g_il2cppStringNew = nullptr;
+
+static void ResolveIl2CppStringApi(uintptr_t bias) {
+    (void)bias;
+    void* sym = dlsym(RTLD_DEFAULT, "il2cpp_string_new");
+    if (!sym) {
+        void* il2cpp = dlopen("libil2cpp.so", RTLD_NOW | RTLD_NOLOAD);
+        if (il2cpp) {
+            sym = dlsym(il2cpp, "il2cpp_string_new");
+        }
+    }
+    g_il2cppStringNew = reinterpret_cast<Il2CppStringNewFn>(sym);
+    LOGI("il2cpp_string_new: %s", g_il2cppStringNew ? "resolved" : "NOT FOUND");
+}
+
+// ============================================================================
+// Native Android EditText bridge
+// ============================================================================
+
+static jobject GetCurrentActivity(JNIEnv* env) {
+    jclass unityPlayer = env->FindClass("com/unity3d/player/UnityPlayer");
+    if (!unityPlayer) {
+        ClearJavaException(env, "FindClass(UnityPlayer)");
         return nullptr;
     }
 
-    // InputField field limit before keyboard creation.
-    InstallHook(hookFunction,
-                RvaToHookAddress(il2cppLoadBias, kTMP_ActivateInputFieldInternal_RVA),
-                reinterpret_cast<void*>(my_TMP_activateInternal),
-                reinterpret_cast<void**>(&orig_TMP_activateInternal),
-                "TMP_InputField.ActivateInputFieldInternal");
+    jfieldID currentActivity = env->GetStaticFieldID(
+        unityPlayer, "currentActivity", "Landroid/app/Activity;");
+    if (!currentActivity) {
+        ClearJavaException(env, "GetStaticFieldID(currentActivity)");
+        env->DeleteLocalRef(unityPlayer);
+        return nullptr;
+    }
 
-    InstallHook(hookFunction,
-                RvaToHookAddress(il2cppLoadBias, kInputField_ActivateInputFieldInternal_RVA),
-                reinterpret_cast<void*>(my_InputField_activateInternal),
-                reinterpret_cast<void**>(&orig_InputField_activateInternal),
-                "InputField.ActivateInputFieldInternal");
+    jobject activity = env->GetStaticObjectField(unityPlayer, currentActivity);
+    env->DeleteLocalRef(unityPlayer);
+    return activity;
+}
 
-    // Keep the limit cleared during post-edit keyboard synchronization.
-    InstallHook(hookFunction,
-                RvaToHookAddress(il2cppLoadBias, kTMP_UpdateTouchKeyboardFromEditChanges_RVA),
-                reinterpret_cast<void*>(my_TMP_updateTouchKeyboard),
-                reinterpret_cast<void**>(&orig_TMP_updateTouchKeyboard),
-                "TMP_InputField.UpdateTouchKeyboardFromEditChanges");
+static jstring JavaStringFromUtf8(JNIEnv* env, const std::string& text) {
+    return env->NewStringUTF(text.c_str());
+}
 
-    InstallHook(hookFunction,
-                RvaToHookAddress(il2cppLoadBias, kInputField_UpdateTouchKeyboardFromEditChanges_RVA),
-                reinterpret_cast<void*>(my_InputField_updateTouchKeyboard),
-                reinterpret_cast<void**>(&orig_InputField_updateTouchKeyboard),
-                "InputField.UpdateTouchKeyboardFromEditChanges");
+static std::string Utf8FromJavaString(JNIEnv* env, jstring str) {
+    if (!str) {
+        return {};
+    }
 
-    // TouchScreenKeyboard creation path.
-    InstallHook(hookFunction,
-                RvaToHookAddress(il2cppLoadBias, kTSK_Ctor_RVA),
-                reinterpret_cast<void*>(my_TSK_ctor),
-                reinterpret_cast<void**>(&orig_TSK_ctor),
-                "TouchScreenKeyboard::.ctor");
+    const jsize len = env->GetStringLength(str);
+    const jchar* chars = env->GetStringChars(str, nullptr);
+    if (!chars) {
+        return {};
+    }
 
-    InstallHook(hookFunction,
-                RvaToHookAddress(il2cppLoadBias, kTSK_Open_RVA),
-                reinterpret_cast<void*>(my_TSK_open),
-                reinterpret_cast<void**>(&orig_TSK_open),
-                "TouchScreenKeyboard.Open");
+    const std::string result = Utf16ToUtf8(
+        reinterpret_cast<const uint16_t*>(chars), static_cast<size_t>(len));
+    env->ReleaseStringChars(str, chars);
+    return result;
+}
 
-    InstallHook(hookFunction,
-                RvaToHookAddress(il2cppLoadBias, kTSK_InternalConstructorHelper_RVA),
-                reinterpret_cast<void*>(my_TSK_helper),
-                reinterpret_cast<void**>(&orig_TSK_helper),
-                "TouchScreenKeyboard.InternalConstructorHelper");
+static bool EnsureNativeEditText(JNIEnv* env, const std::string& initialText) {
+    std::lock_guard<std::mutex> lock(g_jniUiMutex);
+    if (g_editTextGlobal) {
+        return true;
+    }
 
-    InstallHook(hookFunction,
-                RvaToHookAddress(il2cppLoadBias, kTSK_InternalConstructorHelper_Injected_RVA),
-                reinterpret_cast<void*>(my_TSK_helperInjected),
-                reinterpret_cast<void**>(&orig_TSK_helperInjected),
-                "TouchScreenKeyboard.InternalConstructorHelper_Injected");
+    jobject activity = GetCurrentActivity(env);
+    if (!activity) {
+        LOGE("UnityPlayer.currentActivity bulunamadi.");
+        return false;
+    }
 
-    // Low-level keyboard limit setter.
-    InstallHook(hookFunction,
-                RvaToHookAddress(il2cppLoadBias, kTSK_SetCharacterLimit_Injected_RVA),
-                reinterpret_cast<void*>(my_TSK_setLimitInjected),
-                reinterpret_cast<void**>(&orig_TSK_setLimitInjected),
-                "TouchScreenKeyboard.set_characterLimit_Injected");
+    jclass editTextCls = env->FindClass("android/widget/EditText");
+    jclass viewGroupParamsCls = env->FindClass("android/view/ViewGroup$LayoutParams");
+    jclass inputTypeCls = env->FindClass("android/text/InputType");
+    if (!editTextCls || !viewGroupParamsCls || !inputTypeCls) {
+        ClearJavaException(env, "FindClass(EditText/LayoutParams/InputType)");
+        env->DeleteLocalRef(activity);
+        return false;
+    }
 
-    // Managed/property hooks as additional protection.
-    InstallHook(hookFunction,
-                RvaToHookAddress(il2cppLoadBias, kTSK_SetCharacterLimit_RVA),
-                reinterpret_cast<void*>(my_Keyboard_setLimit),
-                reinterpret_cast<void**>(&orig_Keyboard_setLimit),
-                "TouchScreenKeyboard.set_characterLimit");
+    jmethodID editCtor = env->GetMethodID(
+        editTextCls, "<init>", "(Landroid/content/Context;)V");
+    jmethodID setSingleLine = env->GetMethodID(editTextCls, "setSingleLine", "(Z)V");
+    jmethodID setMaxLines = env->GetMethodID(editTextCls, "setMaxLines", "(I)V");
+    jmethodID setInputType = env->GetMethodID(editTextCls, "setInputType", "(I)V");
+    jmethodID setText = env->GetMethodID(editTextCls, "setText", "(Ljava/lang/CharSequence;)V");
+    jmethodID setFocusableInTouchMode = env->GetMethodID(editTextCls, "setFocusableInTouchMode", "(Z)V");
+    jmethodID requestFocus = env->GetMethodID(editTextCls, "requestFocus", "()Z");
+    jmethodID setBackgroundColor = env->GetMethodID(editTextCls, "setBackgroundColor", "(I)V");
+    jmethodID setTextColor = env->GetMethodID(editTextCls, "setTextColor", "(I)V");
+    jmethodID setCursorVisible = env->GetMethodID(editTextCls, "setCursorVisible", "(Z)V");
+    jmethodID setAlpha = env->GetMethodID(editTextCls, "setAlpha", "(F)V");
+    jmethodID getText = env->GetMethodID(editTextCls, "getText", "()Landroid/text/Editable;");
 
-    InstallHook(hookFunction,
-                RvaToHookAddress(il2cppLoadBias, kTMP_SetCharacterLimit_RVA),
-                reinterpret_cast<void*>(my_TMP_setLimit),
-                reinterpret_cast<void**>(&orig_TMP_setLimit),
-                "TMP_InputField.set_characterLimit");
+    jmethodID lpCtor = env->GetMethodID(viewGroupParamsCls, "<init>", "(II)V");
+    jmethodID addContentView = env->GetMethodID(
+        env->GetObjectClass(activity), "addContentView",
+        "(Landroid/view/View;Landroid/view/ViewGroup$LayoutParams;)V");
 
-    InstallHook(hookFunction,
-                RvaToHookAddress(il2cppLoadBias, kInputField_SetCharacterLimit_RVA),
-                reinterpret_cast<void*>(my_InputField_setLimit),
-                reinterpret_cast<void**>(&orig_InputField_setLimit),
-                "InputField.set_characterLimit");
+    if (!editCtor || !setSingleLine || !setMaxLines || !setInputType || !setText ||
+        !setFocusableInTouchMode || !requestFocus || !setBackgroundColor ||
+        !setTextColor || !setCursorVisible || !setAlpha || !getText ||
+        !lpCtor || !addContentView) {
+        ClearJavaException(env, "GetMethodID(EditText)");
+        env->DeleteLocalRef(activity);
+        env->DeleteLocalRef(editTextCls);
+        env->DeleteLocalRef(viewGroupParamsCls);
+        env->DeleteLocalRef(inputTypeCls);
+        return false;
+    }
 
+    // InputType constants. We only use stable constants from InputType.
+    const jint TYPE_CLASS_TEXT = 0x00000001;
+    const jint TYPE_TEXT_FLAG_MULTI_LINE = 0x00020000;
+    const jint TYPE_TEXT_FLAG_CAP_SENTENCES = 0x00004000;
+    const jint inputType = TYPE_CLASS_TEXT | TYPE_TEXT_FLAG_MULTI_LINE | TYPE_TEXT_FLAG_CAP_SENTENCES;
+
+    jobject editText = env->NewObject(editTextCls, editCtor, activity);
+    if (!editText || ClearJavaException(env, "NewObject(EditText)")) {
+        env->DeleteLocalRef(activity);
+        env->DeleteLocalRef(editTextCls);
+        env->DeleteLocalRef(viewGroupParamsCls);
+        env->DeleteLocalRef(inputTypeCls);
+        return false;
+    }
+
+    jstring initial = JavaStringFromUtf8(env, initialText);
+    env->CallVoidMethod(editText, setText, initial);
+    env->DeleteLocalRef(initial);
+
+    env->CallVoidMethod(editText, setSingleLine, JNI_FALSE);
+    env->CallVoidMethod(editText, setMaxLines, 0x7FFFFFFF);
+    env->CallVoidMethod(editText, setInputType, inputType);
+    env->CallVoidMethod(editText, setFocusableInTouchMode, JNI_TRUE);
+    env->CallVoidMethod(editText, setBackgroundColor, static_cast<jint>(0x00000000));
+    env->CallVoidMethod(editText, setTextColor, static_cast<jint>(0x00000000));
+    env->CallVoidMethod(editText, setCursorVisible, JNI_FALSE);
+    env->CallVoidMethod(editText, setAlpha, 0.0f);
+
+    jobject lp = env->NewObject(viewGroupParamsCls, lpCtor, 1, 1);
+    env->CallVoidMethod(activity, addContentView, editText, lp);
+    if (ClearJavaException(env, "addContentView(EditText)")) {
+        env->DeleteLocalRef(lp);
+        env->DeleteLocalRef(editText);
+        env->DeleteLocalRef(activity);
+        env->DeleteLocalRef(editTextCls);
+        env->DeleteLocalRef(viewGroupParamsCls);
+        env->DeleteLocalRef(inputTypeCls);
+        return false;
+    }
+
+    env->CallBooleanMethod(editText, requestFocus);
+
+    jclass contextCls = env->FindClass("android/content/Context");
+    jobject imm = nullptr;
+    if (contextCls) {
+        jmethodID getSystemService = env->GetMethodID(
+            contextCls, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
+        jfieldID inputMethodService = env->GetStaticFieldID(
+            contextCls, "INPUT_METHOD_SERVICE", "Ljava/lang/String;");
+        if (getSystemService && inputMethodService) {
+            jstring serviceName = static_cast<jstring>(
+                env->GetStaticObjectField(contextCls, inputMethodService));
+            imm = env->CallObjectMethod(activity, getSystemService, serviceName);
+            env->DeleteLocalRef(serviceName);
+        }
+    }
+
+    if (imm) {
+        jclass immCls = env->FindClass("android/view/inputmethod/InputMethodManager");
+        if (immCls) {
+            jmethodID showSoftInput = env->GetMethodID(
+                immCls, "showSoftInput", "(Landroid/view/View;I)Z");
+            if (showSoftInput) {
+                env->CallBooleanMethod(editText, requestFocus);
+                env->CallBooleanMethod(imm, showSoftInput, editText, 0);
+            }
+            env->DeleteLocalRef(immCls);
+        }
+        env->DeleteLocalRef(imm);
+    }
+
+    g_editTextGlobal = env->NewGlobalRef(editText);
+    g_bridgeRunning.store(true);
+
+    if (contextCls) env->DeleteLocalRef(contextCls);
+    env->DeleteLocalRef(lp);
+    env->DeleteLocalRef(editText);
+    env->DeleteLocalRef(activity);
+    env->DeleteLocalRef(editTextCls);
+    env->DeleteLocalRef(viewGroupParamsCls);
+    env->DeleteLocalRef(inputTypeCls);
+    return g_editTextGlobal != nullptr;
+}
+
+static void RemoveNativeEditText(JNIEnv* env) {
+    std::lock_guard<std::mutex> lock(g_jniUiMutex);
+    if (!g_editTextGlobal) {
+        g_bridgeRunning.store(false);
+        return;
+    }
+
+    jclass viewCls = env->GetObjectClass(g_editTextGlobal);
+    jmethodID getWindowToken = env->GetMethodID(
+        viewCls, "getWindowToken", "()Landroid/os/IBinder;");
+
+    jobject token = nullptr;
+    if (getWindowToken) {
+        token = env->CallObjectMethod(g_editTextGlobal, getWindowToken);
+    }
+
+    jobject activity = GetCurrentActivity(env);
+    if (activity) {
+        jclass contextCls = env->FindClass("android/content/Context");
+        if (contextCls) {
+            jmethodID getSystemService = env->GetMethodID(
+                contextCls, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
+            jfieldID inputMethodService = env->GetStaticFieldID(
+                contextCls, "INPUT_METHOD_SERVICE", "Ljava/lang/String;");
+            if (getSystemService && inputMethodService) {
+                jstring serviceName = static_cast<jstring>(
+                    env->GetStaticObjectField(contextCls, inputMethodService));
+                jobject imm = env->CallObjectMethod(activity, getSystemService, serviceName);
+                env->DeleteLocalRef(serviceName);
+                if (imm && token) {
+                    jclass immCls = env->FindClass("android/view/inputmethod/InputMethodManager");
+                    if (immCls) {
+                        jmethodID hideSoftInputFromWindow = env->GetMethodID(
+                            immCls, "hideSoftInputFromWindow", "(Landroid/os/IBinder;I)Z");
+                        if (hideSoftInputFromWindow) {
+                            env->CallBooleanMethod(imm, hideSoftInputFromWindow, token, 0);
+                        }
+                        env->DeleteLocalRef(immCls);
+                    }
+                }
+                if (imm) env->DeleteLocalRef(imm);
+            }
+            env->DeleteLocalRef(contextCls);
+        }
+        env->DeleteLocalRef(activity);
+    }
+
+    // Remove the view from its parent if there is one.
+    jclass viewCls2 = env->GetObjectClass(g_editTextGlobal);
+    jmethodID getParent = env->GetMethodID(viewCls2, "getParent", "()Landroid/view/ViewParent;");
+    jobject parent = getParent ? env->CallObjectMethod(g_editTextGlobal, getParent) : nullptr;
+    if (parent) {
+        jclass vgCls = env->FindClass("android/view/ViewGroup");
+        if (vgCls) {
+            jmethodID removeView = env->GetMethodID(
+                vgCls, "removeView", "(Landroid/view/View;)V");
+            if (removeView) {
+                env->CallVoidMethod(parent, removeView, g_editTextGlobal);
+            }
+            env->DeleteLocalRef(vgCls);
+        }
+        env->DeleteLocalRef(parent);
+    }
+
+    if (token) env->DeleteLocalRef(token);
+    env->DeleteLocalRef(viewCls2);
+    env->DeleteLocalRef(viewCls);
+    env->DeleteGlobalRef(g_editTextGlobal);
+    g_editTextGlobal = nullptr;
+    g_bridgeRunning.store(false);
+}
+
+static void KeyboardPollThread() {
+    g_threadRunning.store(true);
+    bool attached = false;
+    JNIEnv* env = GetEnv(&attached);
+    if (!env) {
+        g_threadRunning.store(false);
+        return;
+    }
+
+    while (g_threadRunning.load()) {
+        if (!g_bridgeRunning.load() || !g_editTextGlobal) {
+            usleep(50000);
+            continue;
+        }
+
+        jobject editTextRef = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_jniUiMutex);
+            if (g_editTextGlobal) {
+                editTextRef = env->NewLocalRef(g_editTextGlobal);
+            }
+        }
+        if (!editTextRef) {
+            usleep(30000);
+            continue;
+        }
+
+        jclass editTextCls = env->GetObjectClass(editTextRef);
+        jmethodID getText = env->GetMethodID(
+            editTextCls, "getText", "()Landroid/text/Editable;");
+        jmethodID toString = nullptr;
+        jobject editable = nullptr;
+        jstring asString = nullptr;
+
+        if (getText) {
+            editable = env->CallObjectMethod(editTextRef, getText);
+            if (editable) {
+                jclass editableCls = env->GetObjectClass(editable);
+                toString = env->GetMethodID(editableCls, "toString", "()Ljava/lang/String;");
+                if (toString) {
+                    asString = static_cast<jstring>(env->CallObjectMethod(editable, toString));
+                }
+                env->DeleteLocalRef(editableCls);
+            }
+        }
+
+        if (!ClearJavaException(env, "poll EditText text") && asString) {
+            const std::string text = Utf8FromJavaString(env, asString);
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            if (text != g_pendingText || !g_hasPendingText) {
+                g_pendingText = text;
+                g_hasPendingText = true;
+            }
+        }
+
+        if (asString) env->DeleteLocalRef(asString);
+        if (editable) env->DeleteLocalRef(editable);
+        if (editTextCls) env->DeleteLocalRef(editTextCls);
+        env->DeleteLocalRef(editTextRef);
+
+        usleep(30000);
+    }
+
+    DetachIfNeeded(attached);
+    g_threadRunning.store(false);
+}
+
+static void StartPollThread() {
+    static std::once_flag once;
+    std::call_once(once, []() {
+        std::thread(KeyboardPollThread).detach();
+    });
+}
+
+static void OpenNativeKeyboardForField(void* field, bool isTmp) {
+    if (!field) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_activeField = field;
+        g_activeIsTmp = isTmp;
+        g_hasPendingText = false;
+        g_pendingText.clear();
+        g_lastAppliedText.clear();
+    }
+
+    bool attached = false;
+    JNIEnv* env = GetEnv(&attached);
+    if (!env) {
+        LOGE("JNI env alinamadi; native keyboard acilamadi.");
+        return;
+    }
+
+    std::string initialText;
+    if (isTmp && g_tmpGetText) {
+        initialText = Il2CppStringToUtf8(g_tmpGetText(field, nullptr));
+    } else if (!isTmp && g_inputGetText) {
+        initialText = Il2CppStringToUtf8(g_inputGetText(field, nullptr));
+    }
+
+    if (!EnsureNativeEditText(env, initialText)) {
+        LOGE("Native EditText olusturulamadi.");
+        DetachIfNeeded(attached);
+        return;
+    }
+
+    StartPollThread();
+    LOGI("Native Android keyboard acildi. field=%p type=%s initialLen=%zu",
+         field, isTmp ? "TMP_InputField" : "InputField", initialText.size());
+    DetachIfNeeded(attached);
+}
+
+static void CloseNativeKeyboard() {
+    bool attached = false;
+    JNIEnv* env = GetEnv(&attached);
+    if (env) {
+        RemoveNativeEditText(env);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_activeField = nullptr;
+        g_activeIsTmp = false;
+        g_pendingText.clear();
+        g_hasPendingText = false;
+        g_lastAppliedText.clear();
+    }
+    DetachIfNeeded(attached);
+}
+
+// Force the Unity-side input field to unlimited before every native-to-Unity
+// transfer. This matters because InputField/TMP_InputField can clamp text in
+// their managed set_text path even though the Android EditText is unlimited.
+static inline void ForceUnlimitedField(void* instance, bool isTmp) {
+    if (!instance) {
+        return;
+    }
+    const uintptr_t offset = isTmp
+        ? kTMP_CharacterLimit_FieldOffset
+        : kInputField_CharacterLimit_FieldOffset;
+    *reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(instance) + offset) = 0;
+}
+
+// ============================================================================
+// Unity text synchronization
+// ============================================================================
+
+static void ApplyPendingText(void* instance, bool isTmp, MethodInfoPtr methodInfo) {
+    std::string pending;
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        if (!g_hasPendingText || instance != g_activeField) {
+            return;
+        }
+        pending = g_pendingText;
+    }
+
+    ForceUnlimitedField(instance, isTmp);
+
+    if (!g_il2cppStringNew) {
+        return;
+    }
+
+    if (pending == g_lastAppliedText) {
+        return;
+    }
+
+    Il2CppString* managed = g_il2cppStringNew(pending.c_str());
+    if (!managed) {
+        return;
+    }
+
+    if (isTmp) {
+        if (g_tmpSetText) {
+            g_tmpSetText(instance, managed, nullptr);
+        }
+    } else {
+        if (g_inputSetText) {
+            g_inputSetText(instance, managed, nullptr);
+        }
+    }
+
+    g_lastAppliedText = std::move(pending);
+}
+
+static bool IsActiveField(void* instance, bool* isTmpOut = nullptr) {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    if (instance != g_activeField) {
+        return false;
+    }
+    if (isTmpOut) {
+        *isTmpOut = g_activeIsTmp;
+    }
+    return true;
+}
+
+// ============================================================================
+// Hooks: activation / frame update / close
+// ============================================================================
+
+static void my_TMP_Activate(void* instance, MethodInfoPtr methodInfo) {
+    LOGI("TMP_InputField activation intercepted: %p", instance);
+    ForceUnlimitedField(instance, true);
+
+    // Keep Unity's normal selection/focus state so OnUpdateSelected and the
+    // existing chat/send UI continue to work. We then steal the Android IME
+    // focus with our native EditText.
+    if (g_origTmpActivate) {
+        g_origTmpActivate(instance, methodInfo);
+    }
+
+    OpenNativeKeyboardForField(instance, true);
+}
+
+static void my_Input_Activate(void* instance, MethodInfoPtr methodInfo) {
+    LOGI("InputField activation intercepted: %p", instance);
+    ForceUnlimitedField(instance, false);
+
+    if (g_origInputActivate) {
+        g_origInputActivate(instance, methodInfo);
+    }
+
+    OpenNativeKeyboardForField(instance, false);
+}
+
+static void my_TMP_OnUpdateSelected(void* instance, void* eventData, MethodInfoPtr methodInfo) {
+    if (g_origTmpUpdateSelected) {
+        g_origTmpUpdateSelected(instance, eventData, methodInfo);
+    }
+    ApplyPendingText(instance, true, methodInfo);
+}
+
+static void my_Input_OnUpdateSelected(void* instance, void* eventData, MethodInfoPtr methodInfo) {
+    if (g_origInputUpdateSelected) {
+        g_origInputUpdateSelected(instance, eventData, methodInfo);
+    }
+    ApplyPendingText(instance, false, methodInfo);
+}
+
+static void my_TMP_UpdateTouchKeyboard(void* instance, MethodInfoPtr methodInfo) {
+    if (IsActiveField(instance)) {
+        // Native EditText owns the Android IME now. Do not push Unity's
+        // character-limited TouchScreenKeyboard state back to Android.
+        ForceUnlimitedField(instance, true);
+        return;
+    }
+    if (g_origTmpUpdateKeyboard) {
+        g_origTmpUpdateKeyboard(instance, methodInfo);
+    }
+}
+
+static void my_Input_UpdateTouchKeyboard(void* instance, MethodInfoPtr methodInfo) {
+    if (IsActiveField(instance)) {
+        ForceUnlimitedField(instance, false);
+        return;
+    }
+    if (g_origInputUpdateKeyboard) {
+        g_origInputUpdateKeyboard(instance, methodInfo);
+    }
+}
+
+static void my_TMP_Deactivate(void* instance, MethodInfoPtr methodInfo) {
+    const bool active = IsActiveField(instance);
+    if (g_origTmpDeactivate) {
+        g_origTmpDeactivate(instance, methodInfo);
+    }
+    if (active) {
+        LOGI("TMP_InputField deactivate -> native keyboard close");
+        CloseNativeKeyboard();
+    }
+}
+
+static void my_Input_Deactivate(void* instance, MethodInfoPtr methodInfo) {
+    const bool active = IsActiveField(instance);
+    if (g_origInputDeactivate) {
+        g_origInputDeactivate(instance, methodInfo);
+    }
+    if (active) {
+        LOGI("InputField deactivate -> native keyboard close");
+        CloseNativeKeyboard();
+    }
+}
+
+static void my_TMP_OnDeselect(void* instance, void* eventData, MethodInfoPtr methodInfo) {
+    const bool active = IsActiveField(instance);
+    if (g_origTmpDeselect) {
+        g_origTmpDeselect(instance, eventData, methodInfo);
+    }
+    if (active) {
+        LOGI("TMP_InputField deselect -> native keyboard close");
+        CloseNativeKeyboard();
+    }
+}
+
+static void my_Input_OnDeselect(void* instance, void* eventData, MethodInfoPtr methodInfo) {
+    const bool active = IsActiveField(instance);
+    if (g_origInputDeselect) {
+        g_origInputDeselect(instance, eventData, methodInfo);
+    }
+    if (active) {
+        LOGI("InputField deselect -> native keyboard close");
+        CloseNativeKeyboard();
+    }
+}
+
+static void my_TMP_OnSubmit(void* instance, void* eventData, MethodInfoPtr methodInfo) {
+    const bool active = IsActiveField(instance);
+    ApplyPendingText(instance, true, methodInfo);
+    if (g_origTmpSubmit) {
+        g_origTmpSubmit(instance, eventData, methodInfo);
+    }
+    if (active) {
+        LOGI("TMP_InputField submit -> native keyboard close");
+        CloseNativeKeyboard();
+    }
+}
+
+static void my_Input_OnSubmit(void* instance, void* eventData, MethodInfoPtr methodInfo) {
+    const bool active = IsActiveField(instance);
+    ApplyPendingText(instance, false, methodInfo);
+    if (g_origInputSubmit) {
+        g_origInputSubmit(instance, eventData, methodInfo);
+    }
+    if (active) {
+        LOGI("InputField submit -> native keyboard close");
+        CloseNativeKeyboard();
+    }
+}
+
+// ============================================================================
+// Hook installer
+// ============================================================================
+
+static void InstallHook(uintptr_t target, void* replacement, void** original, const char* label) {
+    if (!g_hook) {
+        LOGE("MSHookFunction yok; %s kurulamaz.", label);
+        return;
+    }
+    LOGI("Hook %s @ 0x%" PRIxPTR, label, target);
+    g_hook(reinterpret_cast<void*>(target), replacement, original);
+    LOGI("Hook %s original=%p", label, original ? *original : nullptr);
+}
+
+static void* HackThread(void*) {
+    LOGI("NativeKeyboard mod thread baslatildi...");
+
+    uintptr_t bias = 0;
+    while ((bias = GetModuleLoadBias("libil2cpp.so")) == 0) {
+        sleep(1);
+    }
+
+    LOGI("libil2cpp.so load bias = 0x%" PRIxPTR, bias);
+    LOGI("Adresleme: loadBias + RVA + Thumb(+1), -0x10000 YOK.");
+
+    g_hook = ResolveMSHookFunction();
+    if (!g_hook) {
+        LOGE("MSHookFunction bulunamadi.");
+        return nullptr;
+    }
+
+    ResolveIl2CppStringApi(bias);
+
+    g_tmpGetText = reinterpret_cast<GetTextFn>(ResolveRva(bias, kTMP_GetText_RVA));
+    g_tmpSetText = reinterpret_cast<SetTextFn>(ResolveRva(bias, kTMP_SetText_RVA));
+    g_inputGetText = reinterpret_cast<GetTextFn>(ResolveRva(bias, kInputField_GetText_RVA));
+    g_inputSetText = reinterpret_cast<SetTextFn>(ResolveRva(bias, kInputField_SetText_RVA));
+
+    InstallHook(ResolveRva(bias, kTMP_ActivateInputFieldInternal_RVA),
+                 reinterpret_cast<void*>(my_TMP_Activate),
+                 reinterpret_cast<void**>(&g_origTmpActivate),
+                 "TMP_InputField.ActivateInputFieldInternal");
+
+    InstallHook(ResolveRva(bias, kInputField_ActivateInputFieldInternal_RVA),
+                 reinterpret_cast<void*>(my_Input_Activate),
+                 reinterpret_cast<void**>(&g_origInputActivate),
+                 "InputField.ActivateInputFieldInternal");
+
+    InstallHook(ResolveRva(bias, kTMP_OnUpdateSelected_RVA),
+                 reinterpret_cast<void*>(my_TMP_OnUpdateSelected),
+                 reinterpret_cast<void**>(&g_origTmpUpdateSelected),
+                 "TMP_InputField.OnUpdateSelected");
+
+    InstallHook(ResolveRva(bias, kInputField_OnUpdateSelected_RVA),
+                 reinterpret_cast<void*>(my_Input_OnUpdateSelected),
+                 reinterpret_cast<void**>(&g_origInputUpdateSelected),
+                 "InputField.OnUpdateSelected");
+
+    InstallHook(ResolveRva(bias, kTMP_UpdateTouchKeyboard_RVA),
+                 reinterpret_cast<void*>(my_TMP_UpdateTouchKeyboard),
+                 reinterpret_cast<void**>(&g_origTmpUpdateKeyboard),
+                 "TMP_InputField.UpdateTouchKeyboardFromEditChanges");
+
+    InstallHook(ResolveRva(bias, kInputField_UpdateTouchKeyboard_RVA),
+                 reinterpret_cast<void*>(my_Input_UpdateTouchKeyboard),
+                 reinterpret_cast<void**>(&g_origInputUpdateKeyboard),
+                 "InputField.UpdateTouchKeyboardFromEditChanges");
+
+    InstallHook(ResolveRva(bias, kTMP_DeactivateInputField_RVA),
+                 reinterpret_cast<void*>(my_TMP_Deactivate),
+                 reinterpret_cast<void**>(&g_origTmpDeactivate),
+                 "TMP_InputField.DeactivateInputField");
+
+    InstallHook(ResolveRva(bias, kInputField_DeactivateInputField_RVA),
+                 reinterpret_cast<void*>(my_Input_Deactivate),
+                 reinterpret_cast<void**>(&g_origInputDeactivate),
+                 "InputField.DeactivateInputField");
+
+    InstallHook(ResolveRva(bias, kTMP_OnDeselect_RVA),
+                 reinterpret_cast<void*>(my_TMP_OnDeselect),
+                 reinterpret_cast<void**>(&g_origTmpDeselect),
+                 "TMP_InputField.OnDeselect");
+
+    InstallHook(ResolveRva(bias, kInputField_OnDeselect_RVA),
+                 reinterpret_cast<void*>(my_Input_OnDeselect),
+                 reinterpret_cast<void**>(&g_origInputDeselect),
+                 "InputField.OnDeselect");
+
+    InstallHook(ResolveRva(bias, kTMP_OnSubmit_RVA),
+                 reinterpret_cast<void*>(my_TMP_OnSubmit),
+                 reinterpret_cast<void**>(&g_origTmpSubmit),
+                 "TMP_InputField.OnSubmit");
+
+    InstallHook(ResolveRva(bias, kInputField_OnSubmit_RVA),
+                 reinterpret_cast<void*>(my_Input_OnSubmit),
+                 reinterpret_cast<void**>(&g_origInputSubmit),
+                 "InputField.OnSubmit");
+
+    LOGI("Native keyboard bridge hazir.");
+    LOGI("TouchScreenKeyboard hook'lanmiyor; oyun klavyesi tamamen bypass ediliyor.");
     return nullptr;
 }
 
-extern "C" {
-JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
-    (void)vm;
-    (void)reserved;
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
+    g_vm = vm;
 
-    pthread_t ptid;
-    const int result = pthread_create(&ptid, nullptr, hack_thread, nullptr);
-    if (result != 0) {
-        LOGE("hack_thread olusturulamadi: %d", result);
+    pthread_t thread;
+    const int rc = pthread_create(&thread, nullptr, HackThread, nullptr);
+    if (rc != 0) {
+        LOGE("HackThread olusturulamadi: %d", rc);
     } else {
-        pthread_detach(ptid);
+        pthread_detach(thread);
     }
 
     return JNI_VERSION_1_6;
-}
 }
