@@ -51,6 +51,16 @@ The current workflow pins Android NDK `30.0.16248370` and uses CMake/Ninja.
 the Substrate implementation. The generated `.so` therefore expects that symbol
 to be supplied by the runtime environment.
 
-The source currently uses a Thumb-mode address (`base + offset + 1`), so
-`armeabi-v7a` is the default ABI. Do not enable `arm64-v8a` until the offsets and
-calling convention have been verified for AArch64.
+The source targets the 32-bit `armeabi-v7a` build. The addresses in `dump_dosyasi.cs`
+are treated as IL2CPP RVAs and are added to the ELF load bias detected from
+`/proc/self/maps`. No fixed `0x10000` subtraction is performed. On ARM32 the
+target address is adjusted to Thumb mode (`+1`).
+
+Current dump.cs RVAs:
+
+- `TouchScreenKeyboard.set_characterLimit` = `0x3598790`
+- `TMP_InputField.set_characterLimit` = `0x34AA4D0`
+- `UnityEngine.UI.InputField.set_characterLimit` = `0x3942DE4`
+
+The hook implementation resolves `MSHookFunction` with `dlsym()` at runtime, so
+the generated library does not require a direct undefined symbol at load time.
