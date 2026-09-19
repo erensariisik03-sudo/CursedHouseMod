@@ -116,7 +116,7 @@ static JNIEnv* GetEnv(bool* attached) {
     }
 
     if (getEnv == JNI_EDETACHED) {
-        if (g_vm->AttachCurrentThread(reinterpret_cast<void**>(&env), nullptr) == JNI_OK) {
+        if (g_vm->AttachCurrentThread(&env, nullptr) == JNI_OK) {
             *attached = true;
             return env;
         }

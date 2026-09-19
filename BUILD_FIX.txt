@@ -1,0 +1,6 @@
+NDK 30 fix:
+- Replaced AttachCurrentThread(reinterpret_cast<void**>(&env), nullptr)
+  with AttachCurrentThread(&env, nullptr).
+- No dump.cs or analysis files are included.
+- Required project files: src/main.cpp, include/substrate.h, CMakeLists.txt,
+  build.sh, and .github/workflows/build.yml.

@@ -1,6 +1,0 @@
-/build/
-/.cxx/
-.gradle/
-*.so
-*.o
-*.a
