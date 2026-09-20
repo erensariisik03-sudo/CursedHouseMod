@@ -1,13 +1,18 @@
 #pragma once
+#include <stddef.h>
 
-#include <dlfcn.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-// Substrate-compatible runtime resolver. The mod does not link directly
-// against a Substrate library; the hook implementation must be exposed by
-// the runtime/injector environment.
-typedef void (*MSHookFunction_t)(void* symbol, void* replace, void** result);
+typedef void (*MSHookFunction_t)(
+    void* symbol,
+    void* replace,
+    void** result
+);
 
-inline MSHookFunction_t ResolveMSHookFunction() {
-    void* symbol = dlsym(RTLD_DEFAULT, "MSHookFunction");
-    return reinterpret_cast<MSHookFunction_t>(symbol);
+MSHookFunction_t ResolveMSHookFunction(void);
+
+#ifdef __cplusplus
 }
+#endif

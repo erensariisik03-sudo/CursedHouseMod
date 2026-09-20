@@ -1,18 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${ANDROID_NDK_HOME:?Set ANDROID_NDK_HOME to your Android NDK directory}"
-
-ABI="${1:-armeabi-v7a}"
-
+rm -rf build
 cmake -S . -B build \
-  -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-  -DANDROID_ABI="$ABI" \
-  -DANDROID_PLATFORM=android-21 \
-  -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON
+  -DANDROID_ABI=armeabi-v7a \
+  -DANDROID_PLATFORM=android-21
 
 cmake --build build --parallel
 
-echo "Built: build/libcursedhouse_native_keyboard.so"
+echo "SO: build/libcursedhouse_chat.so"

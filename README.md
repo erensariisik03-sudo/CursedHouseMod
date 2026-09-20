@@ -1,85 +1,49 @@
-# CursedHouseMod — Native Keyboard V2
+# CursedHouseMod — exact chat-targeted limit patch
 
-Bu sürüm eski Unity Android klavyesini **gerçekten bloke eder** ve yerine native Android `EditText` üzerinden sistem klavyesini açar.
+Bu sürüm `dump_dosyasi.cs` içindeki gerçek oyun `chat` sınıfını hedefler.
 
-## Yeni akış
+Dump'ta:
+- `public class chat : MonoBehaviourPunCallbacks // TypeDefIndex: 3387`
+- `TMP_InputField inputField; // 0x18`
+- `chat.OnEnable() = 0xF696A0`
+- `chat.sendMessage() = 0xF69758`
+- `chat.Update() = 0xF6A6CC`
 
-```text
-Unity TMP_InputField / InputField
-          |
-          v
-ActivateInputFieldInternal
-          |
-          +----> Unity kendi aktivasyon durumunu korur
-          |
-          +----> TouchScreenKeyboard.InternalConstructorHelper
-                    |
-                    X  ORIGINAL NATIVE KEYBOARD BLOCKED
-                    |
-                    v
-              Native Android EditText
-                    |
-                    v
-               Android IME
-```
+Kullanılan TMP adresleri:
+- `TMP_InputField.set_characterLimit = 0x34AA4D0`
+- `TMP_InputField.SetText = 0x34A92B0`
+- `TMP_InputField.SetTextWithoutNotify = 0x34A9440`
+- `TMP_InputField.Append(string) = 0x34B47DC`
+- `TMP_InputField.Append(char) = 0x34B4884`
+- `TMP_InputField.Insert(char) = 0x34B4CF8`
+- `TMP_InputField.ActivateInputFieldInternal = 0x34AE794`
+- `TMP_InputField.UpdateTouchKeyboardFromEditChanges = 0x34B1A68`
+- `TMP_InputField.m_CharacterLimit = 0x114`
 
-Önemli fark: önceki sürümde `ActivateInputFieldInternal` sonrasında Unity'nin kendi klavye oluşturma yolu engellenmeden kalabiliyordu. V2'de `TouchScreenKeyboard.InternalConstructorHelper` ve `_Injected` çağrıları hook'lanıyor ve **orijinal fonksiyonlar çağrılmıyor**.
+Bu sürüm özellikle `chat.inputField` nesnesini `chat + 0x18` üzerinden bulur ve limitini:
+`0`
+yapar.
 
-## Kullanılan adresler
+Önemli: Bu test sürümü Android klavyeyi değiştirmez. Önce gerçekten oyunun chat alanındaki limit kaynağını izole eder. Böylece logda hedefin gerçekten vurulup vurulmadığını görebiliriz.
 
-- `TouchScreenKeyboard.InternalConstructorHelper` = `0x3597A90`
-- `TouchScreenKeyboard.InternalConstructorHelper_Injected` = `0x3597D28`
-- `TMP_InputField.ActivateInputFieldInternal` = `0x34AE794`
-- `InputField.ActivateInputFieldInternal` = `0x3944DC0`
-- `TMP_InputField.OnUpdateSelected` = `0x34B2634`
-- `InputField.OnUpdateSelected` = `0x3948160`
-- `TMP_InputField.UpdateTouchKeyboardFromEditChanges` = `0x34B1A68`
-- `InputField.UpdateTouchKeyboardFromEditChanges` = `0x3947EFC`
-- `TMP_InputField.DeactivateInputField` = `0x34ACC18`
-- `InputField.DeactivateInputField` = `0x3943C10`
-- `TMP_InputField.OnDeselect` = `0x34B7480`
-- `InputField.OnDeselect` = `0x394C440`
-- `TMP_InputField.OnSubmit` = `0x34B74B0`
-- `InputField.OnSubmit` = `0x394C464`
-
-Adresleme:
-
-```text
-runtime = libil2cpp loadBias + RVA + Thumb(+1)
-```
-
-`-0x10000` kullanılmaz.
-
-## Beklenen loglar
-
-```text
-NativeKeyboard mod thread baslatildi...
-libil2cpp.so load bias = ...
-Hook TouchScreenKeyboard.InternalConstructorHelper [BLOCK] ...
-Hook TouchScreenKeyboard.InternalConstructorHelper_Injected [BLOCK] ...
-Hook TMP_InputField.ActivateInputFieldInternal ...
-```
-
-Sohbet kutusuna dokununca:
-
-```text
-TMP_InputField activation intercepted: ...
-BLOCK TouchScreenKeyboard.InternalConstructorHelper: ...
-Native Android keyboard acildi (old TouchScreenKeyboard BLOCKED). ...
-```
-
-Bunları görüyorsan eski Unity klavyesinin native oluşturma çağrısı artık çalışmıyor demektir.
-
-## Build
-
+Log:
 ```bash
-./build.sh
+adb logcat -c
+adb logcat -s CursedHouseChat:V
+```
+
+Beklenen:
+```text
+chat.OnEnable this=...
+chat.OnEnable AFTER: chat=... inputField=... characterLimit=...
+chat.Update: ... characterLimit X -> 0
+TMP_InputField.Append...
+TMP_InputField.Insert...
 ```
 
 Çıktı:
+`build/libcursedhouse_chat.so`
 
-```text
-build/libcursedhouse_native_keyboard.so
-```
-
-GitHub Actions da yalnızca gerekli build dosyalarıyla `armeabi-v7a` üretir.
+ARM32 adresleme:
+`loadBias + RVA + Thumb(+1)`.
+`-0x10000` kullanılmaz.

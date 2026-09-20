@@ -1,68 +1,29 @@
-name: Build Native Keyboard .so
+name: Build cursedhouse chat mod
 
 on:
+  workflow_dispatch:
   push:
     branches: ["**"]
-  pull_request:
-  workflow_dispatch:
-
-permissions:
-  contents: read
 
 jobs:
   build:
-    name: Android ${{ matrix.abi }}
     runs-on: ubuntu-latest
 
-    strategy:
-      fail-fast: false
-      matrix:
-        abi:
-          - armeabi-v7a
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
-      - name: Set up JDK
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
-
-      - name: Install Android NDK
-        shell: bash
-        run: |
-          sdkmanager --install "ndk;30.0.16248370"
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/30.0.16248370" >> "$GITHUB_ENV"
-
-      - name: Configure CMake
-        shell: bash
+      - name: Configure
         run: |
           cmake -S . -B build \
-            -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI="${{ matrix.abi }}" \
-            -DANDROID_PLATFORM=android-21 \
-            -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON
+            -DANDROID_ABI=armeabi-v7a \
+            -DANDROID_PLATFORM=android-21
 
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Prepare artifact
-        shell: bash
-        run: |
-          mkdir -p dist/${{ matrix.abi }}
-          cp build/libcursedhouse_native_keyboard.so dist/${{ matrix.abi }}/libcursedhouse_native_keyboard.so
-          file dist/${{ matrix.abi }}/libcursedhouse_native_keyboard.so
-
-      - name: Upload .so
+      - name: Upload SO
         uses: actions/upload-artifact@v4
         with:
-          name: cursedhouse-native-keyboard-${{ matrix.abi }}
-          path: dist/${{ matrix.abi }}/libcursedhouse_native_keyboard.so
-          if-no-files-found: error
+          name: cursedhouse-chat-armeabi-v7a
+          path: build/libcursedhouse_chat.so
