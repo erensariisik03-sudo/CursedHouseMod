@@ -1,61 +1,71 @@
-# CursedHouseMod - chat-target v1
+# CursedHouseMod - chat-target v2 diagnostic
 
-This variant targets the game's own `chat` object instead of relying primarily on Unity's global keyboard API.
+Bu sürümün amacı iki şeyi birbirinden ayırmaktır:
 
-## Dump-derived targets
+1. dump.cs RVA + 32-bit Thumb adres hesabı doğru mu?
+2. Runtime'da gerçekten bir native hook backend'i var mı?
 
-From the supplied `dump.cs`:
+Önemli: Önceki logdaki `MSHookFunction bulunamadi` mesajı nedeniyle hiçbir hook kurulmamıştı. Bu durumda limitin değişmemesi beklenir; adreslerin doğru/yanlış olduğunu o sürüm test edemiyordu.
 
-- `chat` input field: `this + 0x18`
-- `chat.OnEnable`: `0xF696A0`
-- `chat.Update`: `0xF6A6CC`
-- `TMP_InputField.m_CharacterLimit`: `0x114`
-- `TMP_InputField.ActivateInputFieldInternal`: `0x34AE794`
-- `TMP_InputField.UpdateTouchKeyboardFromEditChanges`: `0x34B1A68`
+## Hedefler
 
-The runtime function target is computed as:
+- `chat.OnEnable` = `0xF696A0`
+- `chat.sendMessage` = `0xF69758`
+- `chat.Update` = `0xF6A6CC`
+- `chat.inputField` = `this + 0x18`
+- `TMP_InputField.m_CharacterLimit` = `0x114`
+- `TMP_InputField.set_characterLimit` = `0x34AA4D0`
+- `TMP_InputField.SetText(string)` = `0x34BD1AC`
+- `TMP_InputField.Append(string)` = `0x34B47DC`
+- `TMP_InputField.Append(char)` = `0x34B4884`
+- `TMP_InputField.Insert(char)` = `0x34B4CF8`
+- `TMP_InputField.ActivateInputFieldInternal` = `0x34AE794`
+- `TMP_InputField.UpdateTouchKeyboardFromEditChanges` = `0x34B1A68`
+- `TouchScreenKeyboard.set_characterLimit` = `0x3598790`
+- `UnityEngine.UI.InputField.set_characterLimit` = `0x3942DE4`
+- `UnityEngine.UI.InputField.ActivateInputFieldInternal` = `0x3944DC0`
 
-`load_bias + RVA`, then Thumb bit `+1` is applied on `armeabi-v7a`.
+Fonksiyon adresleri `loadBias + RVA` ile hesaplanır ve `armeabi-v7a` için Thumb biti `+1` olarak eklenir. Field offsetlerine `+1` eklenmez.
 
-There is deliberately **no `-0x10000`** adjustment because these values are the RVA values from `dump.cs`, not the earlier Ghidra address representation.
-
-## What the hook does
-
-`chat.OnEnable` and `chat.Update` read:
-
-`chat + 0x18 -> TMP_InputField*`
-
-then:
-
-`TMP_InputField* + 0x114 -> m_CharacterLimit`
-
-and force that integer to `0`.
-
-The two TMP keyboard-edit methods are backup points that clear the same field immediately around the keyboard synchronization path.
-
-## Runtime logging
-
-Use:
+## Yeni loglar
 
 ```sh
 adb logcat -c
 adb logcat -s CursedHouseChat:V
 ```
 
-Useful messages include:
+Önce şunları görmelisin:
 
 ```text
-chat.OnEnable
-chat.Update
-chat.inputField=... m_CharacterLimit X -> 0
-TMP_InputField=... ActivateInputFieldInternal: m_CharacterLimit X -> 0
-TMP_InputField=... UpdateTouchKeyboardFromEditChanges: X -> 0
+libil2cpp load bias=...
+MAP ... libil2cpp.so
+RVA CHECK chat.OnEnable ...
+BYTES chat.OnEnable: ...
+...
+HOOK BACKEND ...
 ```
 
-## Build
+### A) `HOOK BACKEND YOK`
+Bu durumda native hook motoru runtime'da yoktur. `libmultiplayermod.so` kendi başına `MSHookFunction` üretmiyor; Substrate veya Dobby gibi bir hook backend'i gerekir.
 
-The GitHub Actions workflow builds `armeabi-v7a` with Android NDK `30.0.16248370`.
+### B) `TARGET INVALID`
+Hedef adres `libil2cpp.so` executable mapping'i içinde değilse load-bias/RVA eşleşmesini tekrar incelemek gerekir.
 
-The output is:
+### C) `HOOK RESULT ... original=...`
+Hook kurulmuştur. Bundan sonra uygulamada chat açılırken şu çağrıları görmeliyiz:
 
-`build/libmultiplayermod.so`
+```text
+CALL chat.OnEnable
+CALL chat.Update
+CALL TMP_InputField.set_characterLimit
+CALL TMP_InputField.ActivateInputFieldInternal
+CALL TMP_InputField.UpdateTouchKeyboardFromEditChanges
+CALL TMP_InputField.Append(string)
+CALL TMP_InputField.Append(char)
+```
+
+`chat.Update` logunda `chat+0x18` ile elde edilen gerçek `TMP_InputField*` ve `m_CharacterLimit` değeri de yazdırılır.
+
+## Not
+
+Bu sürüm, çalışan hook backend'i bulunmadığında yanlış adrese native patch uygulamaz. Önce tanı koyar; bu nedenle `MSHookFunction` yoksa limitin kaldırılması yine gerçekleşmez.
