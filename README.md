@@ -69,3 +69,9 @@ CALL TMP_InputField.Append(char)
 ## Not
 
 Bu sürüm, çalışan hook backend'i bulunmadığında yanlış adrese native patch uygulamaz. Önce tanı koyar; bu nedenle `MSHookFunction` yoksa limitin kaldırılması yine gerçekleşmez.
+
+
+V3 NOTU
+- Dump.cs RVA'ları doğrudan loadBias + RVA olarak kullanılır. ARM32 fonksiyonlarında +1 yoktur; diagnostic byte'lar ARM-mode prologue gösterdi.
+- Dobby build sırasında FetchContent ile projeye dahil edilir; runtime'da libdobby.so aranmaz.
+- İlk testte daha riskli Append/SetText hookları kaldırıldı; chat.Update, chat.OnEnable, chat.sendMessage, TMP limit/activate/update keyboard ve TSK/legacy limit hedefleri kullanılıyor.

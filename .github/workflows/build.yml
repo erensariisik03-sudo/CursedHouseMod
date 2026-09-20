@@ -1,4 +1,4 @@
-name: Build Android .so
+name: Build Android .so (Dobby embedded)
 
 on:
   push:

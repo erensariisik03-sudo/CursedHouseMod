@@ -12,6 +12,7 @@
 #include <string>
 #include <string>
 #include "substrate.h"
+#include "dobby.h"
 
 #define LOG_TAG "CursedHouseChat"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -154,16 +155,15 @@ static uintptr_t GetModuleLoadBias(const char* moduleName, bool verbose) {
     return (minBias == UINTPTR_MAX) ? 0 : minBias;
 }
 
-static inline uintptr_t MakeThumbAddress(uintptr_t address) {
-#if defined(__arm__)
-    return address | static_cast<uintptr_t>(1);
-#else
+static inline uintptr_t MakeFunctionAddress(uintptr_t address) {
+    // The diagnostic bytes prove this ARM32 libil2cpp is using ARM-mode
+    // prologues (for example 30 48 2D E9), not Thumb-mode prologues.
+    // Therefore do NOT add +1 to these dump.cs RVAs.
     return address;
-#endif
 }
 
 static inline uintptr_t RvaToFunctionAddress(uintptr_t rva) {
-    return MakeThumbAddress(g_il2cppLoadBias + rva);
+    return MakeFunctionAddress(g_il2cppLoadBias + rva);
 }
 
 static void LogBytes(uintptr_t address, const char* label) {
@@ -201,63 +201,12 @@ static void* ResolveFromHandle(void* handle, const char* symbol) {
 
 static HookBackend ResolveHookBackend() {
     HookBackend out{};
-
-    // 1) Search the global namespace first.
-    out.substrate = ResolveMSHookFunctionDefault();
-    out.dobby = ResolveDobbyHookDefault();
-    if (out.substrate) {
-        out.kind = HookBackend::SUBSTRATE;
-        out.ownerName = "RTLD_DEFAULT/MSHookFunction";
-        LOGI("HOOK BACKEND: MSHookFunction global export bulundu");
-        return out;
-    }
-    if (out.dobby) {
-        out.kind = HookBackend::DOBBY;
-        out.ownerName = "RTLD_DEFAULT/DobbyHook";
-        LOGI("HOOK BACKEND: DobbyHook global export bulundu");
-        return out;
-    }
-
-    // 2) Search common already-loaded hook libraries without forcing a new load.
-    const char* candidates[] = {
-        "libsubstrate.so",
-        "libSubstrate.so",
-        "libdobby.so",
-        "libshadowhook.so",
-        "libwhale.so",
-        nullptr
-    };
-
-    for (int i = 0; candidates[i] != nullptr; ++i) {
-        void* h = dlopen(candidates[i], RTLD_NOW | RTLD_NOLOAD);
-        if (!h) {
-            LOGI("HOOK LIB YOK/NOLOAD: %s", candidates[i]);
-            continue;
-        }
-
-        void* m = ResolveFromHandle(h, "MSHookFunction");
-        void* d = ResolveFromHandle(h, "DobbyHook");
-        LOGI("HOOK LIB bulundu: %s MSHookFunction=%p DobbyHook=%p", candidates[i], m, d);
-
-        if (m) {
-            out.kind = HookBackend::SUBSTRATE;
-            out.substrate = reinterpret_cast<MSHookFunction_t>(m);
-            out.ownerHandle = h;
-            out.ownerName = candidates[i];
-            return out;
-        }
-        if (d) {
-            out.kind = HookBackend::DOBBY;
-            out.dobby = reinterpret_cast<DobbyHook_t>(d);
-            out.ownerHandle = h;
-            out.ownerName = candidates[i];
-            return out;
-        }
-
-        dlclose(h);
-    }
-
-    LOGE("HOOK BACKEND YOK: MSHookFunction ve DobbyHook bulunamadi");
+    // Dobby is linked into this module at build time. Do not depend on another
+    // process-injected library being present or exporting DobbyHook globally.
+    out.kind = HookBackend::DOBBY;
+    out.dobby = &DobbyHook;
+    out.ownerName = "builtin DobbyHook";
+    LOGI("HOOK BACKEND: builtin DobbyHook kullaniliyor");
     return out;
 }
 
@@ -267,9 +216,7 @@ static bool InstallHook(uintptr_t rva, void* replacement, void** original, const
          label, rva, target, g_hookBackend.ownerName ? g_hookBackend.ownerName : "NONE");
     LogBytes(target, label);
 
-    if (g_hookBackend.substrate) {
-        g_hookBackend.substrate(reinterpret_cast<void*>(target), replacement, original);
-    } else if (g_hookBackend.dobby) {
+    if (g_hookBackend.dobby) {
         const int rc = g_hookBackend.dobby(reinterpret_cast<void*>(target), replacement, original);
         LOGI("DobbyHook result %d for %s", rc, label);
         if (rc != 0) {
@@ -433,7 +380,7 @@ static void* hack_thread(void*) {
 
     LOGI("libil2cpp load bias=0x%" PRIxPTR, g_il2cppLoadBias);
     LOGI("dump.cs RVA kullaniliyor; -0x10000 uygulanmiyor");
-    LOGI("ARM32 build=%s sizeof(void*)=%zu", sizeof(void*) == 4 ? "yes" : "no", sizeof(void*));
+    LOGI("ARM32 build=%s sizeof(void*)=%zu; function addresses use ARM mode (NO +1)", sizeof(void*) == 4 ? "yes" : "no", sizeof(void*));
 
     // Verbose maps: confirms whether the load-bias calculation matches ELF file offsets.
     const uintptr_t verboseBias = GetModuleLoadBias("libil2cpp.so", true);
@@ -471,26 +418,6 @@ static void* hack_thread(void*) {
                 reinterpret_cast<void*>(my_TMP_SetCharacterLimit),
                 reinterpret_cast<void**>(&orig_TMP_SetCharacterLimit),
                 "TMP_InputField.set_characterLimit");
-
-    InstallHook(kTMP_SetText_RVA,
-                reinterpret_cast<void*>(my_TMP_SetText),
-                reinterpret_cast<void**>(&orig_TMP_SetText),
-                "TMP_InputField.SetText");
-
-    InstallHook(kTMP_AppendString_RVA,
-                reinterpret_cast<void*>(my_TMP_AppendString),
-                reinterpret_cast<void**>(&orig_TMP_AppendString),
-                "TMP_InputField.Append(string)");
-
-    InstallHook(kTMP_AppendChar_RVA,
-                reinterpret_cast<void*>(my_TMP_AppendChar),
-                reinterpret_cast<void**>(&orig_TMP_AppendChar),
-                "TMP_InputField.Append(char)");
-
-    InstallHook(kTMP_InsertChar_RVA,
-                reinterpret_cast<void*>(my_TMP_InsertChar),
-                reinterpret_cast<void**>(&orig_TMP_InsertChar),
-                "TMP_InputField.Insert(char)");
 
     InstallHook(kTMP_ActivateInputFieldInternal_RVA,
                 reinterpret_cast<void*>(my_TMP_ActivateInputFieldInternal),
