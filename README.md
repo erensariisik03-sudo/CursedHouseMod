@@ -1,49 +1,61 @@
-# CursedHouseMod — exact chat-targeted limit patch
+# CursedHouseMod - chat-target v1
 
-Bu sürüm `dump_dosyasi.cs` içindeki gerçek oyun `chat` sınıfını hedefler.
+This variant targets the game's own `chat` object instead of relying primarily on Unity's global keyboard API.
 
-Dump'ta:
-- `public class chat : MonoBehaviourPunCallbacks // TypeDefIndex: 3387`
-- `TMP_InputField inputField; // 0x18`
-- `chat.OnEnable() = 0xF696A0`
-- `chat.sendMessage() = 0xF69758`
-- `chat.Update() = 0xF6A6CC`
+## Dump-derived targets
 
-Kullanılan TMP adresleri:
-- `TMP_InputField.set_characterLimit = 0x34AA4D0`
-- `TMP_InputField.SetText = 0x34A92B0`
-- `TMP_InputField.SetTextWithoutNotify = 0x34A9440`
-- `TMP_InputField.Append(string) = 0x34B47DC`
-- `TMP_InputField.Append(char) = 0x34B4884`
-- `TMP_InputField.Insert(char) = 0x34B4CF8`
-- `TMP_InputField.ActivateInputFieldInternal = 0x34AE794`
-- `TMP_InputField.UpdateTouchKeyboardFromEditChanges = 0x34B1A68`
-- `TMP_InputField.m_CharacterLimit = 0x114`
+From the supplied `dump.cs`:
 
-Bu sürüm özellikle `chat.inputField` nesnesini `chat + 0x18` üzerinden bulur ve limitini:
-`0`
-yapar.
+- `chat` input field: `this + 0x18`
+- `chat.OnEnable`: `0xF696A0`
+- `chat.Update`: `0xF6A6CC`
+- `TMP_InputField.m_CharacterLimit`: `0x114`
+- `TMP_InputField.ActivateInputFieldInternal`: `0x34AE794`
+- `TMP_InputField.UpdateTouchKeyboardFromEditChanges`: `0x34B1A68`
 
-Önemli: Bu test sürümü Android klavyeyi değiştirmez. Önce gerçekten oyunun chat alanındaki limit kaynağını izole eder. Böylece logda hedefin gerçekten vurulup vurulmadığını görebiliriz.
+The runtime function target is computed as:
 
-Log:
-```bash
+`load_bias + RVA`, then Thumb bit `+1` is applied on `armeabi-v7a`.
+
+There is deliberately **no `-0x10000`** adjustment because these values are the RVA values from `dump.cs`, not the earlier Ghidra address representation.
+
+## What the hook does
+
+`chat.OnEnable` and `chat.Update` read:
+
+`chat + 0x18 -> TMP_InputField*`
+
+then:
+
+`TMP_InputField* + 0x114 -> m_CharacterLimit`
+
+and force that integer to `0`.
+
+The two TMP keyboard-edit methods are backup points that clear the same field immediately around the keyboard synchronization path.
+
+## Runtime logging
+
+Use:
+
+```sh
 adb logcat -c
 adb logcat -s CursedHouseChat:V
 ```
 
-Beklenen:
+Useful messages include:
+
 ```text
-chat.OnEnable this=...
-chat.OnEnable AFTER: chat=... inputField=... characterLimit=...
-chat.Update: ... characterLimit X -> 0
-TMP_InputField.Append...
-TMP_InputField.Insert...
+chat.OnEnable
+chat.Update
+chat.inputField=... m_CharacterLimit X -> 0
+TMP_InputField=... ActivateInputFieldInternal: m_CharacterLimit X -> 0
+TMP_InputField=... UpdateTouchKeyboardFromEditChanges: X -> 0
 ```
 
-Çıktı:
-`build/libcursedhouse_chat.so`
+## Build
 
-ARM32 adresleme:
-`loadBias + RVA + Thumb(+1)`.
-`-0x10000` kullanılmaz.
+The GitHub Actions workflow builds `armeabi-v7a` with Android NDK `30.0.16248370`.
+
+The output is:
+
+`build/libmultiplayermod.so`

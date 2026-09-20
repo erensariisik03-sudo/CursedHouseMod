@@ -1,29 +1,71 @@
-name: Build cursedhouse chat mod
+name: Build Android .so
 
 on:
-  workflow_dispatch:
   push:
     branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
+    name: Android ${{ matrix.abi }}
     runs-on: ubuntu-latest
 
-    steps:
-      - uses: actions/checkout@v4
+    strategy:
+      fail-fast: false
+      matrix:
+        abi:
+          - armeabi-v7a
+          # Enable this only after verifying that the runtime offsets in
+          # main.cpp are valid for AArch64:
+          # - arm64-v8a
 
-      - name: Configure
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android NDK
+        shell: bash
+        run: |
+          sdkmanager --install "ndk;30.0.16248370"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/30.0.16248370" >> "$GITHUB_ENV"
+
+      - name: Configure CMake
+        shell: bash
         run: |
           cmake -S . -B build \
+            -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DANDROID_ABI=armeabi-v7a \
-            -DANDROID_PLATFORM=android-21
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="${{ matrix.abi }}" \
+            -DANDROID_PLATFORM=android-21 \
+            -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON
 
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Upload SO
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir -p dist/${{ matrix.abi }}
+          cp build/libmultiplayermod.so dist/${{ matrix.abi }}/libmultiplayermod.so
+          file dist/${{ matrix.abi }}/libmultiplayermod.so
+
+      - name: Upload .so
         uses: actions/upload-artifact@v4
         with:
-          name: cursedhouse-chat-armeabi-v7a
-          path: build/libcursedhouse_chat.so
+          name: multiplayermod-${{ matrix.abi }}
+          path: dist/${{ matrix.abi }}/libmultiplayermod.so
+          if-no-files-found: error
