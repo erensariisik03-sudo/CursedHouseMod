@@ -3,8 +3,11 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <time.h>
 #include <dlfcn.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "arm_hook.h"
 
@@ -17,11 +20,10 @@
 // IL2CPP LOAD BIAS
 // ============================================================
 
-static uintptr_t g_il2cppLoadBias = 0;
-
 static uintptr_t GetModuleBase(const char* moduleName)
 {
     FILE* fp = fopen("/proc/self/maps", "r");
+
     if (!fp)
         return 0;
 
@@ -33,7 +35,7 @@ static uintptr_t GetModuleBase(const char* moduleName)
         {
             uintptr_t base = 0;
 
-            if (sscanf(line, "%lx-%*lx", &base) == 1)
+            if (sscanf(line, "%" SCNxPTR "-%*" SCNxPTR, &base) == 1)
             {
                 fclose(fp);
                 return base;
@@ -459,7 +461,7 @@ static void* hack_thread(void*)
         }
 
         LOGI(
-            "[MOD] libil2cpp.so bulundu: 0x%lx",
+            "[MOD] libil2cpp.so bulundu: 0x%" PRIxPTR,
             g_il2cppLoadBias
         );
     }
