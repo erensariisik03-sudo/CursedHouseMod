@@ -11,8 +11,7 @@
 #include <vector>
 #include <string>
 #include <string>
-#include "substrate.h"
-#include "dobby.h"
+#include "arm_hook.h"
 
 #define LOG_TAG "CursedHouseChat"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -68,8 +67,6 @@ static CharInstanceFn orig_TMP_InsertChar = nullptr;
 static SetTextFn orig_TMP_SetText = nullptr;
 
 static uintptr_t g_il2cppLoadBias = 0;
-static HookBackend g_hookBackend;
-
 struct MapEntry {
     uintptr_t start = 0;
     uintptr_t end = 0;
@@ -189,8 +186,8 @@ static void LogBytes(uintptr_t address, const char* label) {
 }
 
 static void LogTarget(uintptr_t rva, const char* label) {
-    LOGI("RVA CHECK %s RVA=0x%" PRIxPTR " abs_no_thumb=0x%" PRIxPTR " abs_thumb=0x%" PRIxPTR,
-         label, rva, g_il2cppLoadBias + rva, RvaToFunctionAddress(rva));
+    LOGI("RVA CHECK %s RVA=0x%" PRIxPTR " abs_arm=0x%" PRIxPTR,
+         label, rva, RvaToFunctionAddress(rva));
     LogBytes(RvaToFunctionAddress(rva), label);
 }
 
@@ -199,37 +196,23 @@ static void* ResolveFromHandle(void* handle, const char* symbol) {
     return dlsym(handle, symbol);
 }
 
-static HookBackend ResolveHookBackend() {
-    HookBackend out{};
-    // Dobby is linked into this module at build time. Do not depend on another
-    // process-injected library being present or exporting DobbyHook globally.
-    out.kind = HookBackend::DOBBY;
-    out.dobby = &DobbyHook;
-    out.ownerName = "builtin DobbyHook";
-    LOGI("HOOK BACKEND: builtin DobbyHook kullaniliyor");
-    return out;
-}
-
-static bool InstallHook(uintptr_t rva, void* replacement, void** original, const char* label) {
+static bool InstallArmHook(uintptr_t rva, void* replacement, void** original, const char* label) {
     const uintptr_t target = RvaToFunctionAddress(rva);
-    LOGI("HOOK ATTEMPT %s RVA=0x%" PRIxPTR " target=0x%" PRIxPTR " backend=%s",
-         label, rva, target, g_hookBackend.ownerName ? g_hookBackend.ownerName : "NONE");
+    LOGI("HOOK ATTEMPT %s RVA=0x%" PRIxPTR " target=0x%" PRIxPTR, label, rva, target);
     LogBytes(target, label);
 
-    if (g_hookBackend.dobby) {
-        const int rc = g_hookBackend.dobby(reinterpret_cast<void*>(target), replacement, original);
-        LOGI("DobbyHook result %d for %s", rc, label);
-        if (rc != 0) {
-            LOGE("DobbyHook FAILED %s rc=%d", label, rc);
-            return false;
-        }
-    } else {
-        LOGE("HOOK SKIP %s: backend yok", label);
+    if (target == 0) {
+        LOGE("HOOK FAIL %s: target=0", label);
         return false;
     }
 
-    LOGI("HOOK RESULT %s original=%p", label, original ? *original : nullptr);
-    return original == nullptr || *original != nullptr;
+    const int rc = ArmHook(reinterpret_cast<void*>(target), replacement, original);
+    LOGI("ArmHook result %d for %s original=%p", rc, label, original ? *original : nullptr);
+    if (rc != 0) {
+        LOGE("ArmHook FAILED %s rc=%d", label, rc);
+        return false;
+    }
+    return original && *original;
 }
 
 static inline int ReadInt(uintptr_t address) {
@@ -389,60 +372,26 @@ static void* hack_thread(void*) {
 
     LogAllTargets();
 
-    g_hookBackend = ResolveHookBackend();
-    if (!g_hookBackend.valid()) {
-        LOGE("LIMIT KALDIRMA DEVREDE DEGIL: hook backend yok.");
-        LOGE("Bu noktaya kadar RVA/base adresleri test edildi; MSHookFunction olmadigi icin kod native fonksiyonlara dokunmuyor.");
-        LOGE("Sonraki test icin yuklu hook motorunun (Substrate veya Dobby) export edilmesi gerekiyor.");
+    LOGI("HOOK BACKEND: builtin ARM32 inline hook");
+    LOGI("Not: Bu surum Dobby/Substrate kullanmiyor.");
+
+    // The dump and diagnostic bytes showed chat.Update begins with ARM-mode
+    // instructions that are safe for the minimal 8-byte trampoline:
+    //   10 40 2D E9   00 40 A0 E1
+    // Therefore this is the first/only hook installed in v4. It is enough to
+    // reach chat.inputField (this + 0x18) every frame and force m_CharacterLimit
+    // (inputField + 0x114) to zero. Other targets remain diagnostics-only.
+    const bool updateHooked = InstallArmHook(
+        kChat_Update_RVA,
+        reinterpret_cast<void*>(my_chat_Update),
+        reinterpret_cast<void**>(&orig_chat_Update),
+        "chat.Update");
+
+    LOGI("chat.Update hook %s", updateHooked ? "AKTIF" : "BASARISIZ");
+    if (!updateHooked) {
+        LOGE("LIMIT KALDIRMA DEVREDE DEGIL: chat.Update hook kurulamadı.");
         return nullptr;
     }
-
-    LOGI("HOOK BACKEND SECILDI: %s", g_hookBackend.ownerName ? g_hookBackend.ownerName : "unknown");
-
-    InstallHook(kChat_OnEnable_RVA,
-                reinterpret_cast<void*>(my_chat_OnEnable),
-                reinterpret_cast<void**>(&orig_chat_OnEnable),
-                "chat.OnEnable");
-
-    InstallHook(kChat_SendMessage_RVA,
-                reinterpret_cast<void*>(my_chat_sendMessage),
-                reinterpret_cast<void**>(&orig_chat_sendMessage),
-                "chat.sendMessage");
-
-    InstallHook(kChat_Update_RVA,
-                reinterpret_cast<void*>(my_chat_Update),
-                reinterpret_cast<void**>(&orig_chat_Update),
-                "chat.Update");
-
-    InstallHook(kTMP_SetCharacterLimit_RVA,
-                reinterpret_cast<void*>(my_TMP_SetCharacterLimit),
-                reinterpret_cast<void**>(&orig_TMP_SetCharacterLimit),
-                "TMP_InputField.set_characterLimit");
-
-    InstallHook(kTMP_ActivateInputFieldInternal_RVA,
-                reinterpret_cast<void*>(my_TMP_ActivateInputFieldInternal),
-                reinterpret_cast<void**>(&orig_TMP_ActivateInputFieldInternal),
-                "TMP_InputField.ActivateInputFieldInternal");
-
-    InstallHook(kTMP_UpdateTouchKeyboardFromEditChanges_RVA,
-                reinterpret_cast<void*>(my_TMP_UpdateTouchKeyboardFromEditChanges),
-                reinterpret_cast<void**>(&orig_TMP_UpdateTouchKeyboardFromEditChanges),
-                "TMP_InputField.UpdateTouchKeyboardFromEditChanges");
-
-    InstallHook(kTSK_SetCharacterLimit_RVA,
-                reinterpret_cast<void*>(my_TSK_SetCharacterLimit),
-                reinterpret_cast<void**>(&orig_TSK_SetCharacterLimit),
-                "TouchScreenKeyboard.set_characterLimit");
-
-    InstallHook(kLegacy_SetCharacterLimit_RVA,
-                reinterpret_cast<void*>(my_Legacy_SetCharacterLimit),
-                reinterpret_cast<void**>(&orig_Legacy_SetCharacterLimit),
-                "InputField.set_characterLimit");
-
-    InstallHook(kLegacy_ActivateInputFieldInternal_RVA,
-                reinterpret_cast<void*>(my_Legacy_ActivateInputFieldInternal),
-                reinterpret_cast<void**>(&orig_Legacy_ActivateInputFieldInternal),
-                "InputField.ActivateInputFieldInternal");
 
     LOGI("========== HOOK INSTALL COMPLETE ==========");
     return nullptr;

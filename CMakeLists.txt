@@ -10,23 +10,24 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-include(FetchContent)
-FetchContent_Declare(
-    Dobby
-    GIT_REPOSITORY https://github.com/jmpews/Dobby.git
-    GIT_TAG master
-    GIT_SHALLOW TRUE
+add_library(multiplayermod SHARED
+    src/main.cpp
+    src/arm_hook.cpp
 )
-FetchContent_MakeAvailable(Dobby)
 
-add_library(multiplayermod SHARED src/main.cpp)
-
-target_include_directories(multiplayermod PRIVATE ${dobby_SOURCE_DIR}/include include)
+target_include_directories(multiplayermod PRIVATE include)
 
 find_library(log-lib log REQUIRED)
 find_library(dl-lib dl REQUIRED)
 
-target_link_libraries(multiplayermod PRIVATE ${log-lib} ${dl-lib} dobby)
+# No external Substrate/Dobby dependency is required for the ARM32 build.
+target_link_libraries(multiplayermod PRIVATE ${log-lib} ${dl-lib})
+
+if (ANDROID_ABI STREQUAL "armeabi-v7a")
+    target_compile_definitions(multiplayermod PRIVATE CH_ARM32=1)
+else()
+    message(FATAL_ERROR "This project currently supports ARM32/armeabi-v7a only.")
+endif()
 
 message(STATUS "Android ABI: ${ANDROID_ABI}")
 message(STATUS "Android platform: ${ANDROID_PLATFORM}")

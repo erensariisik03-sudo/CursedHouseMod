@@ -1,77 +1,66 @@
-# CursedHouseMod - chat-target v2 diagnostic
+# CursedHouseMod - chat-target v4 ARM32 inline hook
 
-Bu sürümün amacı iki şeyi birbirinden ayırmaktır:
+Bu surum, onceki Dobby derleme hatasi nedeniyle harici Dobby/Substrate bagimliligini tamamen kaldirir.
 
-1. dump.cs RVA + 32-bit Thumb adres hesabı doğru mu?
-2. Runtime'da gerçekten bir native hook backend'i var mı?
+## Neden v4?
 
-Önemli: Önceki logdaki `MSHookFunction bulunamadi` mesajı nedeniyle hiçbir hook kurulmamıştı. Bu durumda limitin değişmemesi beklenir; adreslerin doğru/yanlış olduğunu o sürüm test edemiyordu.
+CI logunda Dobby'nin ARM32 assembler kaynaklari `core/arch/Cpu.h` dosyasini bulamiyordu. Bu nedenle Dobby hedefinden vazgecilip proje icine minimal ARM32 inline-hook katmani eklendi.
 
-## Hedefler
+## ARM32 adresleme
 
-- `chat.OnEnable` = `0xF696A0`
-- `chat.sendMessage` = `0xF69758`
-- `chat.Update` = `0xF6A6CC`
-- `chat.inputField` = `this + 0x18`
-- `TMP_InputField.m_CharacterLimit` = `0x114`
-- `TMP_InputField.set_characterLimit` = `0x34AA4D0`
-- `TMP_InputField.SetText(string)` = `0x34BD1AC`
-- `TMP_InputField.Append(string)` = `0x34B47DC`
-- `TMP_InputField.Append(char)` = `0x34B4884`
-- `TMP_InputField.Insert(char)` = `0x34B4CF8`
-- `TMP_InputField.ActivateInputFieldInternal` = `0x34AE794`
-- `TMP_InputField.UpdateTouchKeyboardFromEditChanges` = `0x34B1A68`
-- `TouchScreenKeyboard.set_characterLimit` = `0x3598790`
-- `UnityEngine.UI.InputField.set_characterLimit` = `0x3942DE4`
-- `UnityEngine.UI.InputField.ActivateInputFieldInternal` = `0x3944DC0`
+Dump.cs RVA'lari `loadBias + RVA` ile kullanilir.
 
-Fonksiyon adresleri `loadBias + RVA` ile hesaplanır ve `armeabi-v7a` için Thumb biti `+1` olarak eklenir. Field offsetlerine `+1` eklenmez.
+Bu oyunun `libil2cpp.so` mapping'i `off=0x0` ile basladigi icin `-0x10000` uygulanmaz.
 
-## Yeni loglar
+Diagnostic byte'lar ARM-mode prologue gosteriyor, ornegin `chat.Update`:
+
+`10 40 2D E9 00 40 A0 E1 ...`
+
+Bu nedenle bu hedefte Thumb `+1` uygulanmaz.
+
+## Kurulan hook
+
+v4'te ilk test icin yalnizca:
+
+- `chat.Update` RVA `0xF6A6CC`
+- `chat.inputField` offset `0x18`
+- `TMP_InputField.m_CharacterLimit` offset `0x114`
+
+kullanilir.
+
+`chat.Update` hook'u her cagrisinda `chat + 0x18` adresinden TMP_InputField pointer'ini okuyup `inputField + 0x114` alanini 0'a ceker.
+
+Diger dump.cs hedefleri bu surumde tanisal olarak loglanabilir, fakat minimal ARM trampoline riskini azaltmak icin otomatik olarak patch edilmez.
+
+## Build
+
+GitHub Actions sadece `armeabi-v7a` uretir ve harici hook kutuphanesi cekmez.
 
 ```sh
 adb logcat -c
 adb logcat -s CursedHouseChat:V
 ```
 
-Önce şunları görmelisin:
+Beklenen ilk satirlardan biri:
 
-```text
-libil2cpp load bias=...
-MAP ... libil2cpp.so
-RVA CHECK chat.OnEnable ...
-BYTES chat.OnEnable: ...
-...
-HOOK BACKEND ...
-```
+`HOOK BACKEND: builtin ARM32 inline hook`
 
-### A) `HOOK BACKEND YOK`
-Bu durumda native hook motoru runtime'da yoktur. `libmultiplayermod.so` kendi başına `MSHookFunction` üretmiyor; Substrate veya Dobby gibi bir hook backend'i gerekir.
+ve devaminda:
 
-### B) `TARGET INVALID`
-Hedef adres `libil2cpp.so` executable mapping'i içinde değilse load-bias/RVA eşleşmesini tekrar incelemek gerekir.
+`ArmHook result 0 for chat.Update`
 
-### C) `HOOK RESULT ... original=...`
-Hook kurulmuştur. Bundan sonra uygulamada chat açılırken şu çağrıları görmeliyiz:
+`chat.Update hook AKTIF`
 
-```text
-CALL chat.OnEnable
-CALL chat.Update
-CALL TMP_InputField.set_characterLimit
-CALL TMP_InputField.ActivateInputFieldInternal
-CALL TMP_InputField.UpdateTouchKeyboardFromEditChanges
-CALL TMP_InputField.Append(string)
-CALL TMP_InputField.Append(char)
-```
+Ardindan sohbet ekranini acip su tur loglar gorulmelidir:
 
-`chat.Update` logunda `chat+0x18` ile elde edilen gerçek `TMP_InputField*` ve `m_CharacterLimit` değeri de yazdırılır.
+`CALL chat.Update this=...`
+
+`CHAT INSTANCE ... inputFieldPtr=...`
+
+`TMP OBJECT ... m_CharacterLimit=...`
+
+`TMP OBJECT ... m_CharacterLimit X -> 0`
 
 ## Not
 
-Bu sürüm, çalışan hook backend'i bulunmadığında yanlış adrese native patch uygulamaz. Önce tanı koyar; bu nedenle `MSHookFunction` yoksa limitin kaldırılması yine gerçekleşmez.
-
-
-V3 NOTU
-- Dump.cs RVA'ları doğrudan loadBias + RVA olarak kullanılır. ARM32 fonksiyonlarında +1 yoktur; diagnostic byte'lar ARM-mode prologue gösterdi.
-- Dobby build sırasında FetchContent ile projeye dahil edilir; runtime'da libdobby.so aranmaz.
-- İlk testte daha riskli Append/SetText hookları kaldırıldı; chat.Update, chat.OnEnable, chat.sendMessage, TMP limit/activate/update keyboard ve TSK/legacy limit hedefleri kullanılıyor.
+Minimal ARM trampoline iki adet 32-bit ARM instruction kopyalar. Bu nedenle v4 sadece baslangic talimatlari PC-relative olmayan `chat.Update` hedefini kullanir. Daha farkli hedeflere hook eklemek icin o fonksiyonun ilk talimatlarinin relocation ihtiyaci ayri ele alinmalidir.

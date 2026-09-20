@@ -1,4 +1,4 @@
-name: Build Android .so (Dobby embedded)
+name: Build Android .so (ARM32 inline hook)
 
 on:
   push:
