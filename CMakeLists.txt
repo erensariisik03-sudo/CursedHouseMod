@@ -25,6 +25,8 @@ target_link_libraries(multiplayermod PRIVATE ${log-lib} ${dl-lib})
 
 if (ANDROID_ABI STREQUAL "armeabi-v7a")
     target_compile_definitions(multiplayermod PRIVATE CH_ARM32=1)
+    # ARM/Thumb uyumsuzluğunu çözmek için hook kütüphanesini tamamen ARM modunda derliyoruz.
+    target_compile_options(multiplayermod PRIVATE -marm)
 else()
     message(FATAL_ERROR "This project currently supports ARM32/armeabi-v7a only.")
 endif()
