@@ -45,6 +45,12 @@ static constexpr uintptr_t kInputField_UpdateTouchKeyboard_RVA          = 0x3947
 static constexpr uintptr_t kInputField_GetText_RVA                     = 0x3941B18;
 static constexpr uintptr_t kInputField_SetText_RVA                     = 0x3941B20;
 static constexpr uintptr_t kTMP_CharacterLimit_FieldOffset               = 0x114;
+
+// TouchScreenKeyboard native creation path. These hooks are the actual
+// blocker: Unity's InputField activation can continue, but the original
+// Android IME is never created. Our native EditText owns the IME instead.
+static constexpr uintptr_t kTSK_InternalConstructorHelper_RVA         = 0x3597A90;
+static constexpr uintptr_t kTSK_InternalConstructorHelper_Injected_RVA = 0x3597D28;
 static constexpr uintptr_t kInputField_CharacterLimit_FieldOffset       = 0xDC;
 
 using MethodInfoPtr = void*;
@@ -56,6 +62,20 @@ using VoidInstanceFn     = void (*)(void* instance, MethodInfoPtr methodInfo);
 using EventFn            = void (*)(void* instance, void* eventData, MethodInfoPtr methodInfo);
 using GetTextFn          = Il2CppString* (*)(void* instance, MethodInfoPtr methodInfo);
 using SetTextFn          = void (*)(void* instance, Il2CppString* value, MethodInfoPtr methodInfo);
+
+struct TSK_InternalConstructorHelperArguments {
+    uint32_t keyboardType;
+    uint32_t autocorrection;
+    uint32_t multiline;
+    uint32_t secure;
+    uint32_t alert;
+    int32_t characterLimit;
+};
+
+using TSKHelperFn = void (*)(TSK_InternalConstructorHelperArguments* arguments,
+                              Il2CppString* text,
+                              Il2CppString* textPlaceholder,
+                              MethodInfoPtr methodInfo);
 
 static JavaVM* g_vm = nullptr;
 static MSHookFunction_t g_hook = nullptr;
@@ -77,6 +97,9 @@ static GetTextFn g_tmpGetText = nullptr;
 static SetTextFn g_tmpSetText = nullptr;
 static GetTextFn g_inputGetText = nullptr;
 static SetTextFn g_inputSetText = nullptr;
+
+static TSKHelperFn g_origTSKHelper = nullptr;
+static TSKHelperFn g_origTSKHelperInjected = nullptr;
 
 static std::mutex g_stateMutex;
 static void* g_activeField = nullptr;
@@ -245,6 +268,57 @@ static void ResolveIl2CppStringApi(uintptr_t bias) {
     }
     g_il2cppStringNew = reinterpret_cast<Il2CppStringNewFn>(sym);
     LOGI("il2cpp_string_new: %s", g_il2cppStringNew ? "resolved" : "NOT FOUND");
+}
+
+// ============================================================================
+// HARD BLOCK: Unity TouchScreenKeyboard native creation
+// ============================================================================
+//
+// InputField/TMP_InputField activation is still allowed to run, so Unity keeps
+// its normal selected-field/send-button state. However, the final native call
+// that creates the Android IME is swallowed here. This is the key difference
+// from the previous revision: there is no race where Unity's keyboard opens
+// first and our EditText is opened second.
+//
+// The real Android IME is now created only by EnsureNativeEditText().
+
+static void my_TSK_InternalConstructorHelper(
+    TSK_InternalConstructorHelperArguments* arguments,
+    Il2CppString* text,
+    Il2CppString* textPlaceholder,
+    MethodInfoPtr methodInfo) {
+    if (arguments) {
+        LOGI("BLOCK TouchScreenKeyboard.InternalConstructorHelper: type=%u multiline=%u limit=%d",
+             arguments->keyboardType,
+             arguments->multiline,
+             arguments->characterLimit);
+        arguments->characterLimit = 0;
+    }
+
+    // DELIBERATELY do NOT call g_origTSKHelper.
+    // Calling it would create the game's original Android keyboard.
+    (void)text;
+    (void)textPlaceholder;
+    (void)methodInfo;
+}
+
+static void my_TSK_InternalConstructorHelperInjected(
+    TSK_InternalConstructorHelperArguments* arguments,
+    Il2CppString* text,
+    Il2CppString* textPlaceholder,
+    MethodInfoPtr methodInfo) {
+    if (arguments) {
+        LOGI("BLOCK TouchScreenKeyboard.InternalConstructorHelper_Injected: type=%u multiline=%u limit=%d",
+             arguments->keyboardType,
+             arguments->multiline,
+             arguments->characterLimit);
+        arguments->characterLimit = 0;
+    }
+
+    // DELIBERATELY do NOT call g_origTSKHelperInjected.
+    (void)text;
+    (void)textPlaceholder;
+    (void)methodInfo;
 }
 
 // ============================================================================
@@ -609,7 +683,7 @@ static void OpenNativeKeyboardForField(void* field, bool isTmp) {
     }
 
     StartPollThread();
-    LOGI("Native Android keyboard acildi. field=%p type=%s initialLen=%zu",
+    LOGI("Native Android keyboard acildi (old TouchScreenKeyboard BLOCKED). field=%p type=%s initialLen=%zu",
          field, isTmp ? "TMP_InputField" : "InputField", initialText.size());
     DetachIfNeeded(attached);
 }
@@ -863,6 +937,16 @@ static void* HackThread(void*) {
 
     ResolveIl2CppStringApi(bias);
 
+    InstallHook(ResolveRva(bias, kTSK_InternalConstructorHelper_RVA),
+                 reinterpret_cast<void*>(my_TSK_InternalConstructorHelper),
+                 reinterpret_cast<void**>(&g_origTSKHelper),
+                 "TouchScreenKeyboard.InternalConstructorHelper [BLOCK]");
+
+    InstallHook(ResolveRva(bias, kTSK_InternalConstructorHelper_Injected_RVA),
+                 reinterpret_cast<void*>(my_TSK_InternalConstructorHelperInjected),
+                 reinterpret_cast<void**>(&g_origTSKHelperInjected),
+                 "TouchScreenKeyboard.InternalConstructorHelper_Injected [BLOCK]");
+
     g_tmpGetText = reinterpret_cast<GetTextFn>(ResolveRva(bias, kTMP_GetText_RVA));
     g_tmpSetText = reinterpret_cast<SetTextFn>(ResolveRva(bias, kTMP_SetText_RVA));
     g_inputGetText = reinterpret_cast<GetTextFn>(ResolveRva(bias, kInputField_GetText_RVA));
@@ -929,7 +1013,7 @@ static void* HackThread(void*) {
                  "InputField.OnSubmit");
 
     LOGI("Native keyboard bridge hazir.");
-    LOGI("TouchScreenKeyboard hook'lanmiyor; oyun klavyesi tamamen bypass ediliyor.");
+    LOGI("TouchScreenKeyboard native creation BLOCKED; only native EditText owns the Android IME.");
     return nullptr;
 }
 
