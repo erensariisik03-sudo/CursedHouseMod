@@ -73,7 +73,10 @@ public class ExtractVehicle extends GhidraScript {
         fm = currentProgram.getFunctionManager();
         listing = currentProgram.getListing();
 
-        File outputDir = new File("/output");
+        File outputDir = new File(
+    System.getProperty("user.dir"),
+    "output/libfs14"
+);
         outputDir.mkdirs();
 
         Set<Function> targets = new LinkedHashSet<>();
