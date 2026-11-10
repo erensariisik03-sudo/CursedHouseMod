@@ -1,8 +1,19 @@
-# Ghidra ile .so analizi
+# Farming Simulator 14 - Vehicle / Wheel Analysis
 
-1. Bu klasorun icindekileri yeni bir GitHub reposuna yukle (.github klasoru dahil).
-2. `.so` dosyani `input/` klasorune yukle (Add file > Upload files).
-3. Repo'da Actions sekmesi > "Ghidra Decompile" > Run workflow.
-4. Bitince calismanin sayfasinda en altta "Artifacts" altindaki `cikti` dosyasini indir ve bana at.
+This repository analyzes `input/libfs14.so` with Ghidra Headless.
 
-Cikti: decompiled_functions.c, strings_matched.txt, symbols_matched.txt, all_function_names.txt, headless_log.txt
+## Run
+1. Push this repository to GitHub (include `.github`, `scripts`, and `input`).
+2. Open **Actions** → **Ghidra Vehicle Decompile** → **Run workflow**.
+3. Download artifact **fs14-vehicle-analysis**.
+
+## Output
+- `vehicle_decompiled.c`: decompiled vehicle/wheel/attachment functions and one-hop callers/callees.
+- `vehicle_disassembly.txt`: instruction listing for those functions.
+- `vehicle_callgraph.txt`: calls between selected functions.
+- `vehicle_data_refs.txt`: data references from relevant code.
+- `vehicle_strings.txt`: model/vehicle-related strings and referencing functions.
+- `all_function_names.txt`: full function list.
+- `headless_log.txt`: Ghidra analysis log.
+
+The library in `input/` is the exact `libfs14.so` supplied for this analysis.
