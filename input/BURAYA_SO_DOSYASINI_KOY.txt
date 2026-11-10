@@ -1,0 +1,1 @@
+.so dosyasini (ornek: libapp.so) bu klasore yukle. Bu txt dosyasini silebilirsin.

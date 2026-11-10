@@ -1,0 +1,51 @@
+name: Ghidra Decompile
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'input/**'
+
+jobs:
+  decompile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Ghidra indir
+        run: |
+          URL=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest \
+            | jq -r '.assets[] | select(.name|endswith(".zip")) | .browser_download_url' | head -1)
+          echo "Ghidra: $URL"
+          curl -L -o ghidra.zip "$URL"
+          unzip -q ghidra.zip -d ghidra
+
+      - name: Analiz ve cikarma
+        run: |
+          GH=$(ls -d $PWD/ghidra/ghidra_* | head -1)
+          mkdir -p output proj
+          for f in input/*.so; do
+            [ -e "$f" ] || { echo "input/ icinde .so yok"; exit 1; }
+            n=$(basename "$f" .so)
+            mkdir -p "output/$n"
+            "$GH/support/analyzeHeadless" "$PWD/proj" "p_$n" \
+              -import "$f" \
+              -max-memory 8G \
+              -analysisTimeoutPerFile 3000 \
+              -scriptPath "$PWD/scripts" \
+              -postScript ExtractCow.java "$PWD/output/$n" \
+              -deleteProject > "output/$n/headless_log.txt" 2>&1 || true
+            tail -n 40 "output/$n/headless_log.txt"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cikti
+          path: output
